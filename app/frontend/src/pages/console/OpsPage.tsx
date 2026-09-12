@@ -237,7 +237,13 @@ function ConfigTab() {
   const queryClient = useQueryClient();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [testResult, setTestResult] = useState<LlmTestResult | null>(null);
-  const query = useQuery({ queryKey: ['configs'], queryFn: () => consoleApi.listConfigs() });
+  const canManage = !!perms?.can_manage_config;
+  // 权限门控：非系统管理员不发起 /configs 请求，避免无意义的 403 报错
+  const query = useQuery({
+    queryKey: ['configs'],
+    queryFn: () => consoleApi.listConfigs(),
+    enabled: canManage,
+  });
 
   const updateMutation = useMutation({
     mutationFn: ({ key, value }: { key: string; value: string }) => consoleApi.updateConfig(key, value),
@@ -264,11 +270,19 @@ function ConfigTab() {
     onError: (e) => toast.error(`测试失败：${errDetail(e)}`),
   });
 
+  if (!canManage) {
+    return (
+      <EmptyBlock
+        title="配置中心仅对系统管理员开放"
+        hint={`当前角色「${perms?.role_label ?? '未知'}」无配置管理权限；请使用系统管理员账号（如演示账号 demo-admin@atoms.dev）登录后操作。`}
+      />
+    );
+  }
   if (query.isLoading) return <LoadingBlock rows={5} />;
   if (query.isError) {
     return (
       <EmptyBlock
-        title="配置中心仅对系统管理员开放"
+        title="配置加载失败"
         hint={errDetail(query.error)}
       />
     );
@@ -276,7 +290,6 @@ function ConfigTab() {
 
   const items = query.data?.items ?? [];
   const byKey = new Map(items.map((cfg: ConfigItem) => [cfg.key, cfg]));
-  const canManage = !!perms?.can_manage_config;
 
   return (
     <div className="space-y-4">
@@ -398,6 +411,8 @@ function ConfigTab() {
 }
 
 export default function OpsPage() {
+  const perms = usePermissions();
+  const canManageConfig = !!perms?.can_manage_config;
   return (
     <div className="space-y-4">
       <div>
@@ -409,14 +424,16 @@ export default function OpsPage() {
       <Tabs defaultValue="audit">
         <TabsList>
           <TabsTrigger value="audit">审计日志</TabsTrigger>
-          <TabsTrigger value="config">配置中心</TabsTrigger>
+          {canManageConfig && <TabsTrigger value="config">配置中心</TabsTrigger>}
         </TabsList>
         <TabsContent value="audit" className="mt-4">
           <AuditTab />
         </TabsContent>
-        <TabsContent value="config" className="mt-4">
-          <ConfigTab />
-        </TabsContent>
+        {canManageConfig && (
+          <TabsContent value="config" className="mt-4">
+            <ConfigTab />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );
