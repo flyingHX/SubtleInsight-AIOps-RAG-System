@@ -273,6 +273,164 @@ export interface MergeProposal {
   created_at: string | null;
 }
 
+// ---------------- Agent（诊断 / 知识治理 / 值班） ----------------
+
+export interface AgentTraceStep {
+  iteration?: number;
+  step?: string;
+  thought?: string | null;
+  tool?: string;
+  args?: Record<string, unknown>;
+  observation?: unknown;
+  result?: unknown;
+  clusters?: number;
+  drafts?: number;
+  submitted?: number;
+  skipped?: number;
+  status?: string;
+  window?: string;
+  events?: number;
+  systems?: number;
+  unmapped?: string[];
+  error?: string;
+  raw?: string;
+}
+
+export interface AgentConclusion {
+  root_cause: string;
+  solution: string;
+  confidence: number;
+  evidence_chain: string[];
+  command: string;
+  low_confidence?: boolean;
+  threshold?: number;
+}
+
+export interface AgentDiagnoseResult {
+  status: string;
+  session_id: number;
+  event_id: number;
+  message: string;
+  agent: {
+    model: string;
+    iterations: number;
+    duration_ms: number;
+    tool_trace: AgentTraceStep[];
+    conclusion: AgentConclusion;
+  } | null;
+  fallback?: unknown;
+}
+
+export interface AgentCluster {
+  template: string;
+  count: number;
+  services: string[];
+  clusters: string[];
+  severity_dist: Record<string, number>;
+  max_severity: string;
+  known_error_types: string[];
+  last_seen: string | null;
+  sample_raw_log: string | null;
+}
+
+export interface AgentDraftOutcome {
+  case_id?: string;
+  approval_request_id?: number;
+  auto_published?: boolean;
+  alert_template?: string;
+  reason?: string;
+}
+
+export interface AgentKbGovernanceResult {
+  status: string;
+  session_id: number;
+  message: string;
+  governance: {
+    analysis: string;
+    clusters: AgentCluster[];
+    drafts_submitted: AgentDraftOutcome[];
+    drafts_skipped: AgentDraftOutcome[];
+    merge_result: Record<string, unknown>;
+    model: string;
+    duration_ms: number;
+  };
+}
+
+export interface AgentAffectedSystem {
+  system: string;
+  event_count: number;
+  max_severity: string;
+  owners: string[];
+  clusters: string[];
+  services: { service: string; count: number; max_severity: string }[];
+}
+
+export interface AgentOncallReportResult {
+  status: string;
+  session_id: number;
+  message: string;
+  report: {
+    id: number;
+    time_window: string;
+    event_count: number;
+    by_severity: Record<string, number>;
+    affected_systems: AgentAffectedSystem[];
+    unmapped_services: Record<string, number>;
+    impact_summary: string;
+    priority: string;
+    actions: string[];
+    owners_to_notify: string[];
+    chatops_text: string;
+  };
+}
+
+export interface AgentSession {
+  id: number;
+  session_type: string;
+  event_id: number | null;
+  status: string;
+  model: string;
+  iterations: number | null;
+  duration_ms: number | null;
+  tool_trace: AgentTraceStep[] | null;
+  result: unknown;
+  error_message: string | null;
+  actor: string | null;
+  summary: string | null;
+  created_at: string | null;
+}
+
+export interface CmdbAsset {
+  id: number;
+  hostname: string;
+  ip: string;
+  system_name: string;
+  service_name: string;
+  cluster: string | null;
+  environment: string | null;
+  owner: string | null;
+  owner_email: string | null;
+  dependencies: string[];
+  log_path: string | null;
+  status: string | null;
+  description: string | null;
+}
+
+export interface OncallReportRecord {
+  id: number;
+  time_window: string;
+  event_count: number;
+  critical_count: number;
+  warning_count: number;
+  info_count: number;
+  affected_systems: AgentAffectedSystem[];
+  report: { impact_summary: string; priority: string; actions: string[]; owners_to_notify: string[]; chatops_text: string } | null;
+  chatops_text: string | null;
+  session_id: number | null;
+  actor: string | null;
+  created_at: string | null;
+}
+
 // ---------------- API 函数 ----------------
 
 export const consoleApi = {
@@ -349,4 +507,22 @@ export const consoleApi = {
   listConfigs: () => invoke<{ items: ConfigItem[] }>('/api/v1/console/configs'),
   updateConfig: (key: string, value: string) =>
     invoke<{ key: string; value: string }>('/api/v1/console/configs', 'PUT', { key, value }),
+
+  // Agent：诊断 / 知识治理 / 值班
+  agentDiagnose: (eventId: number) =>
+    invoke<AgentDiagnoseResult>('/api/v1/console/agent/diagnose', 'POST', { event_id: eventId }),
+  agentKbGovernance: () =>
+    invoke<AgentKbGovernanceResult>('/api/v1/console/agent/kb-governance', 'POST', {}),
+  agentOncallReport: (timeWindow: string) =>
+    invoke<AgentOncallReportResult>('/api/v1/console/agent/oncall-report', 'POST', { time_window: timeWindow }),
+  listAgentSessions: (params?: { session_type?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.session_type) qs.set('session_type', params.session_type);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return invoke<{ items: AgentSession[] }>(`/api/v1/console/agent/sessions${suffix}`);
+  },
+  listCmdbAssets: (q?: string) =>
+    invoke<{ items: CmdbAsset[] }>(`/api/v1/console/agent/cmdb${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  listOncallReports: () => invoke<{ items: OncallReportRecord[] }>('/api/v1/console/agent/oncall-reports'),
 };

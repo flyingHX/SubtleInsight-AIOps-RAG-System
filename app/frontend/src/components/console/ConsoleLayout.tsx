@@ -2,13 +2,14 @@
  * 控制台布局外壳：登录门控 + 权限上下文 + 侧边导航 + 顶栏。
  * 未登录时展示登录引导（client.auth.toLogin），不自动跳转，避免回调死循环。
  */
-import { createContext, useContext, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { NavLink, Outlet } from 'react-router-dom';
 import {
   Activity,
   BellRing,
   BookOpenText,
+  Bot,
   ClipboardCheck,
   LayoutDashboard,
   LogOut,
@@ -41,6 +42,7 @@ export const usePermissions = (): Permissions | null => useContext(PermissionsCo
 const NAV_ITEMS = [
   { to: '/', label: '运营总览', icon: LayoutDashboard },
   { to: '/events', label: '告警工作台', icon: BellRing },
+  { to: '/agents', label: 'Agent 工作台', icon: Bot },
   { to: '/kb', label: '知识库', icon: BookOpenText },
   { to: '/approvals', label: '审批中心', icon: ClipboardCheck },
   { to: '/rules', label: '规则管理', icon: ScrollText },
@@ -114,6 +116,33 @@ function LoginScreen() {
       setBusyEmail(null);
     }
   };
+
+  // URL ?auto=1&demo=<账号> 自动演示登录（供验收/分享直达控制台），登录后立即清理参数避免重复触发
+  const autoLoginDone = useRef(false);
+  useEffect(() => {
+    if (autoLoginDone.current) return;
+    autoLoginDone.current = true;
+    const params = new URLSearchParams(window.location.search);
+    // 手动登出后的本次会话不再自动登录，保留登录页供用户选择
+    let manualLogout = false;
+    try {
+      manualLogout = sessionStorage.getItem('manual_logout') === '1';
+    } catch {
+      /* ignore */
+    }
+    const key = (params.get('demo') || 'admin').replace(/^demo-/, '').split('@')[0];
+    const account =
+      DEMO_ACCOUNTS.find(({ email }) => email.startsWith(`demo-${key}@`)) ??
+      DEMO_ACCOUNTS[0];
+    if (params.get('auto') === '1') {
+      window.history.replaceState(null, '', window.location.pathname);
+      void demoLogin(account.email);
+      return;
+    }
+    // 预览环境无参数访问时自动演示登录（后端 ENABLE_DEMO_LOGIN=false 时请求失败，自然回落登录页）
+    if (!manualLogout) void demoLogin(account.email);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4">

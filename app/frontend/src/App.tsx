@@ -6,6 +6,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import ConsoleLayout from './components/console/ConsoleLayout';
 import Index from './pages/Index';
 import EventsPage from './pages/console/EventsPage';
+import AgentsPage from './pages/console/AgentsPage';
 import KbPage from './pages/console/KbPage';
 import ApprovalsPage from './pages/console/ApprovalsPage';
 import RulesPage from './pages/console/RulesPage';
@@ -25,6 +26,7 @@ const AppRoutes = () => (
     <Route element={<ConsoleLayout />}>
       <Route path="/" element={<Index />} />
       <Route path="/events" element={<EventsPage />} />
+      <Route path="/agents" element={<AgentsPage />} />
       <Route path="/kb" element={<KbPage />} />
       <Route path="/approvals" element={<ApprovalsPage />} />
       <Route path="/rules" element={<RulesPage />} />
