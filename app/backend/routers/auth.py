@@ -19,6 +19,7 @@ from dependencies.auth import get_current_user
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from schemas.auth import (
+    DemoLoginRequest,
     PlatformTokenExchangeRequest,
     TokenExchangeResponse,
     UserResponse,
@@ -337,3 +338,40 @@ async def logout():
     """Logout user."""
     logout_url = build_logout_url()
     return {"redirect_url": logout_url}
+
+
+# ---------------- 演示登录（仅预览/演示环境） ----------------
+# 预览环境无法完成外部 OIDC 跳转，此处复用既有 JWT 签发链路为预设演示账号发放令牌，
+# 控制台角色仍由 role_bindings_json 配置解析，不引入第二套认证体系。
+# 生产环境必须设置环境变量 ENABLE_DEMO_LOGIN=false 关闭该端点。
+DEMO_LOGIN_ACCOUNTS = {
+    "demo-operator@atoms.dev": "Demo 值班运维",
+    "demo-sre@atoms.dev": "Demo SRE",
+    "demo-lead@atoms.dev": "Demo 审批人",
+    "demo-admin@atoms.dev": "Demo 管理员",
+}
+
+
+def _demo_login_enabled() -> bool:
+    return os.getenv("ENABLE_DEMO_LOGIN", "true").strip().lower() in ("1", "true", "yes")
+
+
+@router.post("/demo-login", response_model=TokenExchangeResponse)
+async def demo_login(payload: DemoLoginRequest, db: AsyncSession = Depends(get_db)):
+    """Demo quick login for preview environments, reusing the existing JWT issuance chain."""
+    if not _demo_login_enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="演示登录未启用")
+
+    email = (payload.email or "demo-admin@atoms.dev").strip().lower()
+    if email not in DEMO_LOGIN_ACCOUNTS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="仅允许预设演示账号登录")
+
+    from services.auth import AuthService
+
+    auth_service = AuthService(db)
+    user = await auth_service.get_or_create_user(
+        platform_sub=email, email=email, name=DEMO_LOGIN_ACCOUNTS[email]
+    )
+    app_token, expires_at, _ = await auth_service.issue_app_token(user=user)
+    logger.info("[demo-login] Issued demo token for %s, expires_at=%s", email, expires_at)
+    return TokenExchangeResponse(token=app_token)

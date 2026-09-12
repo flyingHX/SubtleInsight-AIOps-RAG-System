@@ -24,3 +24,9 @@ class TokenExchangeResponse(BaseModel):
     """Response body for issued application token."""
 
     token: str
+
+
+class DemoLoginRequest(BaseModel):
+    """Request body for demo quick login (preview environments only)."""
+
+    email: Optional[str] = None

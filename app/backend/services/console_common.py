@@ -44,8 +44,8 @@ CONFIG_DEFAULTS: Dict[str, str] = {
     "rerank_weight_json": '{"cosine":0.5,"topology":0.2,"time_decay":0.1,"feedback":0.2}',
     "llm_timeout_seconds": "45",
     "feature_flags_json": '{"auto_diagnose":true,"dedup_scan":true}',
-    "default_role": "sys_admin",
-    "role_bindings_json": '{"demo-sre@atoms.dev":"sre","demo-lead@atoms.dev":"approver","demo-admin@atoms.dev":"sys_admin"}',
+    "default_role": "viewer",
+    "role_bindings_json": '{"demo-operator@atoms.dev":"operator","demo-sre@atoms.dev":"sre","demo-lead@atoms.dev":"approver","demo-admin@atoms.dev":"sys_admin"}',
 }
 
 # 允许通过配置中心修改的键及其中文说明

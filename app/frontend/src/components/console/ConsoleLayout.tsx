@@ -17,6 +17,7 @@ import {
   Settings2,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
+import { client } from '@/lib/api';
 import { consoleApi, errDetail, type Permissions } from '@/lib/console-api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -78,8 +79,41 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
+/** 预览环境演示账号：走后端 /api/v1/auth/demo-login，复用 Atoms JWT 签发链路。 */
+const DEMO_ACCOUNTS = [
+  { email: 'demo-admin@atoms.dev', label: '系统管理员' },
+  { email: 'demo-lead@atoms.dev', label: '审批人 / SRE Lead' },
+  { email: 'demo-sre@atoms.dev', label: 'SRE' },
+  { email: 'demo-operator@atoms.dev', label: '值班运维' },
+];
+
 function LoginScreen() {
-  const { login } = useAuth();
+  const { login, refresh } = useAuth();
+  const [busyEmail, setBusyEmail] = useState<string | null>(null);
+  const [demoError, setDemoError] = useState('');
+
+  const demoLogin = async (email: string) => {
+    setBusyEmail(email);
+    setDemoError('');
+    try {
+      const res = await client.apiCall.invoke({
+        url: '/api/v1/auth/demo-login',
+        method: 'POST',
+        data: { email },
+      });
+      const token = (res?.data as { token?: string })?.token;
+      if (!token) throw new Error('未获取到登录令牌');
+      // 写入 Web SDK 约定的 localStorage 键，后续请求由 SDK 拦截器自动附加 Bearer
+      localStorage.setItem('token', token);
+      localStorage.setItem('isLougOutManual', 'false');
+      await refresh();
+    } catch (e) {
+      setDemoError(errDetail(e));
+    } finally {
+      setBusyEmail(null);
+    }
+  };
+
   return (
     <div className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm rounded-xl border bg-card p-8 text-center shadow-sm">
@@ -93,6 +127,28 @@ function LoginScreen() {
         <Button className="mt-6 w-full" onClick={login}>
           使用 Atoms 账号登录
         </Button>
+
+        <div className="mt-6 border-t pt-4">
+          <p className="text-xs font-medium text-muted-foreground">演示账号快捷登录（预览环境）</p>
+          <div className="mt-3 grid gap-2">
+            {DEMO_ACCOUNTS.map(({ email, label }) => (
+              <Button
+                key={email}
+                variant="outline"
+                size="sm"
+                className="w-full justify-between"
+                disabled={busyEmail !== null}
+                onClick={() => demoLogin(email)}
+              >
+                <span>{label}</span>
+                <span className="text-xs text-muted-foreground">
+                  {busyEmail === email ? '登录中…' : email.split('@')[0].replace('demo-', '')}
+                </span>
+              </Button>
+            ))}
+          </div>
+          {demoError && <p className="mt-3 text-xs text-destructive">{demoError}</p>}
+        </div>
       </div>
     </div>
   );
