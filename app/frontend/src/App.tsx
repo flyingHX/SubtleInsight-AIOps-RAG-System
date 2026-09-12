@@ -11,6 +11,7 @@ import KbPage from './pages/console/KbPage';
 import ApprovalsPage from './pages/console/ApprovalsPage';
 import RulesPage from './pages/console/RulesPage';
 import OpsPage from './pages/console/OpsPage';
+import UsersPage from './pages/console/UsersPage';
 import HelpPage from './pages/HelpPage';
 import AuthCallback from './pages/AuthCallback';
 import AuthError from './pages/AuthError';
@@ -31,6 +32,7 @@ const AppRoutes = () => (
       <Route path="/approvals" element={<ApprovalsPage />} />
       <Route path="/rules" element={<RulesPage />} />
       <Route path="/ops" element={<OpsPage />} />
+      <Route path="/users" element={<UsersPage />} />
       <Route path="/help" element={<HelpPage />} />
     </Route>
   </Routes>

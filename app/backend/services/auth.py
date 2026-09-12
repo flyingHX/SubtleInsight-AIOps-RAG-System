@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from core.auth import create_access_token
 from core.config import settings
+from fastapi import HTTPException
 from models.auth import OIDCState, User
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,14 +24,22 @@ class AuthService:
         # Try to find existing user
         result = await self.db.execute(select(User).where(User.id == platform_sub))
         user = result.scalar_one_or_none()
+        if user is None and email:
+            # 管理员在用户管理中预创建的档案以邮箱为主键，首次登录时按 email 关联到平台身份
+            result = await self.db.execute(select(User).where(User.email == email))
+            user = result.scalar_one_or_none()
         logger.debug(f"[DB_OP] User lookup completed in {time.time() - start_time:.4f}s - found: {user is not None}")
         admin_user_id = str(getattr(settings, "admin_user_id", "") or "")
         is_admin = bool(admin_user_id) and platform_sub == admin_user_id
 
         if user:
+            # 已被管理员禁用的账号直接拒绝登录
+            if getattr(user, "status", "active") == "disabled":
+                raise HTTPException(status_code=403, detail="账号已被禁用，请联系管理员开通")
             # Update user info if needed
             user.email = email
-            user.name = name
+            if name:
+                user.name = name
             user.last_login = datetime.now(timezone.utc)
             if is_admin:
                 user.role = "admin"

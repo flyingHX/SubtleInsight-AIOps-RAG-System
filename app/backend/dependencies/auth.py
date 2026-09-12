@@ -4,9 +4,12 @@ from datetime import datetime
 from typing import Optional
 
 from core.auth import AccessTokenError, decode_access_token
+from core.database import get_db
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from schemas.auth import UserResponse
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +27,10 @@ async def get_bearer_token(
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication credentials were not provided")
 
 
-async def get_current_user(token: str = Depends(get_bearer_token)) -> UserResponse:
+async def get_current_user(
+    token: str = Depends(get_bearer_token),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
     """Dependency to get current authenticated user via JWT token."""
     try:
         payload = decode_access_token(token)
@@ -36,6 +42,19 @@ async def get_current_user(token: str = Depends(get_bearer_token)) -> UserRespon
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+
+    # 禁用账号即时失效：所有携带令牌的请求统一校验档案状态，
+    # 管理员禁用后无需等待 JWT 过期即在全站生效。
+    from models.auth import User as UserModel
+
+    email = payload.get("email") or ""
+    conditions = [UserModel.id == user_id]
+    if email:
+        conditions.append(UserModel.email == email)
+    row = await db.execute(select(UserModel).where(or_(*conditions)).limit(1))
+    existing = row.scalar_one_or_none()
+    if existing is not None and (existing.status or "active") == "disabled":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用，请联系管理员开通")
 
     last_login_raw = payload.get("last_login")
     last_login = None

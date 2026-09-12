@@ -123,13 +123,31 @@ async def set_config(db: AsyncSession, key: str, value: str, description: Option
 
 
 async def resolve_role(db: AsyncSession, user: UserResponse) -> str:
-    """解析用户控制台角色：先查 role_bindings 绑定，再回退 default_role。"""
+    """解析用户控制台角色：先查 role_bindings 绑定，再回退 default_role。
+
+    账号被管理员禁用时直接 403，保证禁用即时生效而不必等待 JWT 过期。
+    """
+    from models.auth import User as UserModel
+
+    if user.email or user.id:
+        from sqlalchemy import or_
+
+        row = await db.execute(
+            select(UserModel).where(or_(UserModel.id == user.id, UserModel.email == user.email)).limit(1)
+        )
+        existing = row.scalar_one_or_none()
+        if existing is not None and (existing.status or "active") == "disabled":
+            raise HTTPException(status_code=403, detail="账号已被禁用，请联系管理员开通")
+
     bindings = await get_config_json(db, "role_bindings_json", {}) or {}
     role = bindings.get(user.email or "", "")
     if role in ROLE_LEVELS:
         return role
     default_role = await get_config(db, "default_role", "viewer")
-    return default_role if default_role in ROLE_LEVELS else "viewer"
+    # 防越权加固：default_role 不允许解析为 sys_admin，异常配置一律回退 viewer
+    if default_role not in ROLE_LEVELS or default_role == "sys_admin":
+        return "viewer"
+    return default_role
 
 
 def role_at_least(role: str, min_role: str) -> bool:
@@ -161,6 +179,7 @@ def permissions_for(role: str) -> Dict[str, Any]:
         "can_publish": level >= 4,
         "can_manage_rules": level >= 5,
         "can_manage_config": level >= 5,
+        "can_manage_users": level >= 5,
     }
 
 
@@ -276,6 +295,9 @@ def validate_config_value(key: str, value: str) -> Tuple[bool, str]:
             return False, "embedding_model 配置值无效"
         return True, "ok"
     if key == "default_role":
+        # 安全红线：默认角色不得设为 sys_admin，防止未绑定用户越权获得管理员能力
+        if value == "sys_admin":
+            return False, "default_role 不能设置为 sys_admin（防止未绑定用户越权）"
         if value not in ROLE_LEVELS:
             return False, "default_role 必须是有效角色名"
         return True, "ok"

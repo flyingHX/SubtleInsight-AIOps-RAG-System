@@ -188,3 +188,193 @@ python scripts/fix_sequences.py   # 恢复后同步序列
 - 默认角色 `viewer` 最低权限；`role_bindings_json` 中按邮箱精确绑定。
 - 全部写操作（审批/发布/回滚/配置）强制审计，禁止绕过控制台直改数据库。
 - 数据库连接串、平台密钥仅存于环境变量/平台密钥管理，禁止提交到仓库。
+
+## 14. 资源规划与端口清单
+
+### 14.1 控制台（/workspace/app）
+| 环境 | CPU | 内存 | 磁盘 | 网络 |
+|------|-----|------|------|------|
+| 最低（开发/预览） | 2 核 | 4 GB | 40 GB SSD | 出网访问 Atoms 平台（认证/AIHub/托管 DB） |
+| 生产推荐 | 4 核 | 8 GB | 100 GB SSD（日志+备份另计） | 内网千兆，仅开放 80/443 |
+
+### 14.2 RAG 流水线（/workspace/aiops-rag-system，含 Milvus 全家桶）
+| 环境 | CPU | 内存 | 磁盘 | 说明 |
+|------|-----|------|------|------|
+| 最低 | 4 核 | 16 GB | 100 GB SSD | 单机 compose，ES 堆 512MB |
+| 生产推荐 | 8 核 | 32 GB | 500 GB SSD | Milvus 数据随案例数线性增长；Kafka/ES 按告警吞吐评估 |
+
+### 14.3 端口清单
+| 端口 | 服务 | 协议 | 暴露建议 |
+|------|------|------|----------|
+| 443/80 | Nginx/Ingress（前端 + /api 反代） | HTTP(S) | 对外 |
+| 8000 | 控制台 FastAPI 后端 | HTTP | 仅内网/127.0.0.1 |
+| 8001 | RAG 流水线 API（独立进程） | HTTP | 仅内网 |
+| 5432 | PostgreSQL（托管或自建） | TCP | 仅内网 |
+| 19530 | Milvus gRPC | gRPC | 仅内网 |
+| 9091 | Milvus metrics/healthz | HTTP | 仅内网 |
+| 2379 | etcd（Milvus 元数据） | HTTP | 容器网络内，不对外 |
+| 9000 | MinIO（Milvus 对象存储） | HTTP | 容器网络内，不对外 |
+| 9092 | Kafka | TCP | 仅内网 |
+| 6379 | Redis | TCP | 仅内网 |
+| 9200 | Elasticsearch | HTTP | 仅内网 |
+
+## 15. PostgreSQL 生产化
+
+### 15.1 账号与权限（自建库）
+```sql
+CREATE ROLE aiops_console LOGIN PASSWORD '<强密码>';
+CREATE DATABASE aiops_console OWNER aiops_console;
+GRANT ALL ON SCHEMA public TO aiops_console;   -- ORM 启动自动建表需要 DDL
+```
+- 连接串写入 `DATABASE_URL`（`postgresql+asyncpg://aiops_console:<密码>@<host>:5432/aiops_console`）。
+- Atoms Cloud 托管库由平台注入连接串，无需手工授权。
+
+### 15.2 Alembic 迁移
+```bash
+cd app/backend
+alembic current              # 当前版本（应为 b8f2c1d4e5a6：users.status）
+alembic upgrade head         # 升级到最新
+alembic history --verbose    # 迁移历史
+alembic downgrade -1         # 回退一版（执行前先备份，见 §10）
+```
+- ORM 自动建表与 Alembic 并存：新表由启动时 ORM 创建，结构性变更走迁移。
+
+### 15.3 验证命令
+```bash
+psql "$DATABASE_URL" -c "\dt"                                          # 表清单
+psql "$DATABASE_URL" -c "SELECT count(*) FROM audit_logs;"             # 行数抽查
+psql "$DATABASE_URL" -c "SELECT version_num FROM alembic_version;"     # 迁移版本
+python scripts/fix_sequences.py                                        # 显式 ID 导入/恢复后必执行
+```
+
+## 16. Milvus 向量库部署（etcd + MinIO + Milvus）
+
+### 16.1 拓扑与连接参数
+- 组件：etcd v3.5.14（元数据）+ MinIO RELEASE.2024-05-01（对象存储）+ Milvus v2.4.4 standalone，编排见 `aiops-rag-system/docker-compose.yml`，数据卷 `etcd_data`/`minio_data`/`milvus_data`。
+- 连接参数（`aiops-rag-system/.env`）：`MILVUS_HOST=localhost`、`MILVUS_PORT=19530`、`MILVUS_COLLECTION=aiops_knowledge_base`、`MILVUS_NPROBE=32`。
+
+### 16.2 集合与索引规格
+- 集合 `aiops_knowledge_base`：主键 `case_id VARCHAR(64)`；向量字段 `embedding FLOAT_VECTOR dim=1024`（BGE-M3）；shards_num=2。
+- 索引：向量 `IVF_SQ8 / COSINE / nlist=4096`；标量 TRIE 索引：`fingerprint`、`service_name`、`error_type`、`cluster`。
+- 分区：按月 `p_YYYYMM`，检索固定近 3 个月分区。
+
+### 16.3 初始化与验证
+```bash
+cd aiops-rag-system
+docker compose up -d etcd minio milvus
+docker compose ps                        # 三容器 Up
+curl -s http://localhost:9091/healthz    # -> ok
+python scripts/init_milvus.py            # 幂等创建集合/索引/近 3 月分区
+python scripts/seed_cases.py             # 种子案例（演示环境可选）
+```
+- 风险操作：`python scripts/init_milvus.py --overwrite` 会删除并重建集合，生产环境禁止。
+
+## 17. Docker Compose 一键部署（RAG 流水线）
+```bash
+cd aiops-rag-system
+cp .env.example .env          # 至少填写 LLM_API_KEY
+docker compose up -d          # etcd/minio/milvus/kafka/redis/es 全量
+docker compose ps
+python scripts/init_milvus.py
+uvicorn src.main:app --host 0.0.0.0 --port 8001   # lifespan 自动启停 3 个消费者
+```
+
+## 18. Kubernetes 部署（控制台）
+
+### 18.1 Secret 与 ConfigMap
+```yaml
+apiVersion: v1
+kind: Secret
+metadata: {name: aiops-console-secret}
+stringData:
+  DATABASE_URL: postgresql+asyncpg://aiops_console:<pwd>@pg-host:5432/aiops_console
+  JWT_SECRET_KEY: "<随机 64 位字符串>"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: aiops-console-config}
+data:
+  IS_LAMBDA: "false"
+  ENVIRONMENT: "prod"
+```
+
+### 18.2 后端 Deployment（含健康检查与滚动策略）
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: aiops-console-backend}
+spec:
+  replicas: 2
+  strategy: {type: RollingUpdate, rollingUpdate: {maxSurge: 1, maxUnavailable: 0}}
+  selector: {matchLabels: {app: aiops-console-backend}}
+  template:
+    metadata: {labels: {app: aiops-console-backend}}
+    spec:
+      containers:
+      - name: backend
+        image: registry.example.com/aiops-console-backend:<tag>
+        ports: [{containerPort: 8000}]
+        envFrom:
+        - secretRef: {name: aiops-console-secret}
+        - configMapRef: {name: aiops-console-config}
+        readinessProbe: {httpGet: {path: /health, port: 8000}, initialDelaySeconds: 5, periodSeconds: 10}
+        livenessProbe:  {httpGet: {path: /health, port: 8000}, initialDelaySeconds: 15, periodSeconds: 20}
+        resources: {requests: {cpu: 250m, memory: 512Mi}, limits: {cpu: "1", memory: 1Gi}}
+```
+前端 Deployment 同理（镜像内 Nginx 托管 `dist/`，SPA 回退 `try_files $uri /index.html`）。
+
+### 18.3 Service 与 Ingress
+```yaml
+apiVersion: v1
+kind: Service
+metadata: {name: aiops-console-backend}
+spec:
+  selector: {app: aiops-console-backend}
+  ports: [{port: 80, targetPort: 8000}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: aiops-console}
+spec:
+  ingressClassName: nginx
+  tls: [{hosts: [console.example.com], secretName: console-tls}]
+  rules:
+  - host: console.example.com
+    http:
+      paths:
+      - {path: /api, pathType: Prefix, backend: {service: {name: aiops-console-backend, port: {number: 80}}}}
+      - {path: /, pathType: Prefix, backend: {service: {name: aiops-console-frontend, port: {number: 80}}}}
+```
+
+### 18.4 滚动升级与回滚
+```bash
+kubectl set image deploy/aiops-console-backend backend=registry.example.com/aiops-console-backend:<新tag>
+kubectl rollout status deploy/aiops-console-backend   # 观察滚动进度，卡住即阻塞
+kubectl rollout history deploy/aiops-console-backend  # 版本历史
+kubectl rollout undo deploy/aiops-console-backend     # 一键回滚上一版本
+```
+- 升级前置：pg_dump 备份（§10）→ 确认迁移仅向后兼容新增（新增列/表无需 DB 回滚）。
+
+## 19. 路径与目录规范
+| 类别 | 路径 | 说明 |
+|------|------|------|
+| 后端应用 | /opt/app/backend | main.py、services、alembic、scripts |
+| 前端产物 | /opt/app/frontend/dist | pnpm build 产物，Nginx 托管 |
+| 运行配置 | /opt/app/backend/.env | IS_LAMBDA=false、DATABASE_URL 等（chmod 600） |
+| 后端日志 | /opt/app/backend/logs/app_YYYYMMDD.log、restart.log | 按日滚动，保留 30 天 |
+| 数据库 | Atoms Cloud 托管或自建 PG | 备份落 /var/backups/aiops/ |
+| Milvus/etcd/MinIO 数据 | compose named volumes：milvus_data/etcd_data/minio_data | `docker volume inspect` 查实际挂载点 |
+| 规则/模板配置 | aiops-rag-system/config/rules.yaml、drain_patterns.yaml | Git 管理可回溯 |
+| 备份目录 | /var/backups/aiops/ | 每日 pg_dump + 配置快照，建议异地同步 |
+
+## 20. 备份与恢复（全量矩阵）
+| 对象 | 备份 | 恢复 |
+|------|------|------|
+| 业务数据库 | `pg_dump "$DATABASE_URL" -Fc -f /var/backups/aiops/console_$(date +%F).dump` | `pg_restore --clean --if-exists -d "$DATABASE_URL" <dump>` + `python scripts/fix_sequences.py` |
+| 控制台配置 | console_configs 随库备份；另导出 `psql "$DATABASE_URL" -c "\copy console_configs TO 'configs.csv' CSV HEADER"` | 随库恢复；单配置走配置中心改回 |
+| 规则/日志模板 | Git 仓库（rules.yaml、drain_patterns.yaml、logging.yaml） | `git checkout <tag>` 后规则页重发布或重启流水线 |
+| 向量数据 | 方案 A：`milvus-backup` 全量备份；方案 B：案例源数据在 kb_cases 表，重建后重灌 embedding | 重建集合 `init_milvus.py` → 种子/重灌脚本；近 3 月分区自动创建 |
+| 对象存储 | `mc mirror local/minio_data /var/backups/aiops/minio/` | `mc mirror` 反向回灌 |
+| 每日定时 | `10 2 * * * cd /opt/app/backend && pg_dump ... && find /var/backups/aiops -mtime +30 -delete` | — |
+
+- RPO ≤ 24h（每日全量），RTO ≤ 1h（脚本化恢复 + 序列修复 + 巡检）。审计日志（audit_logs）保留 ≥ 180 天。

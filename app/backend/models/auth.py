@@ -12,7 +12,8 @@ class User(Base):
     id: Mapped[str] = mapped_column(String(255), primary_key=True, index=True)  # Use platform sub as primary key
     email: Mapped[str] = mapped_column(String(255))
     name: Mapped[Optional[str]] = mapped_column(String(255))
-    role: Mapped[str] = mapped_column(String(50), default="user")  # user/admin
+    role: Mapped[str] = mapped_column(String(50), default="user")  # user/admin（旧字段，控制台角色以 role_bindings 为准）
+    status: Mapped[str] = mapped_column(String(50), default="active", server_default="active")  # active/disabled
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 

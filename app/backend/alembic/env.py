@@ -35,6 +35,16 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+# Fall back to the application runtime DATABASE_URL when alembic.ini leaves
+# sqlalchemy.url empty, so `alembic upgrade head` works without editing the ini.
+# NOTE: the ini stores a quoted empty string (`""`), so strip quotes/whitespace
+# before treating it as unset.
+_ini_url = (config.get_main_option("sqlalchemy.url") or "").strip().strip("'\"").strip()
+if not _ini_url:
+    from core.config import settings
+
+    config.set_main_option("sqlalchemy.url", settings.database_url)
+
 target_metadata = Base.metadata
 
 

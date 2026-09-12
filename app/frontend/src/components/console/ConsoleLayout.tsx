@@ -16,6 +16,7 @@ import {
   Menu,
   ScrollText,
   Settings2,
+  Users,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { client } from '@/lib/api';
@@ -47,6 +48,7 @@ const NAV_ITEMS = [
   { to: '/approvals', label: '审批中心', icon: ClipboardCheck },
   { to: '/rules', label: '规则管理', icon: ScrollText },
   { to: '/ops', label: '审计与配置', icon: Settings2 },
+  { to: '/users', label: '用户与角色', icon: Users },
   { to: '/help', label: '使用手册', icon: BookOpenText },
 ];
 
@@ -57,9 +59,12 @@ const APPROVAL_MODE_LABEL: Record<string, string> = {
 };
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
+  const perms = usePermissions();
+  // 用户与角色管理仅系统管理员可见
+  const items = NAV_ITEMS.filter((item) => item.to !== '/users' || perms?.can_manage_users);
   return (
     <nav className="flex flex-col gap-1">
-      {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+      {items.map(({ to, label, icon: Icon }) => (
         <NavLink
           key={to}
           to={to}

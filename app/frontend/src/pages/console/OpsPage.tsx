@@ -147,7 +147,7 @@ const SELECT_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: 'operator', label: 'operator（运营）' },
     { value: 'sre', label: 'sre（值班）' },
     { value: 'approver', label: 'approver（审批）' },
-    { value: 'sys_admin', label: 'sys_admin（管理员）' },
+    { value: 'kb_admin', label: 'kb_admin（知识库管理员）' },
   ],
 };
 

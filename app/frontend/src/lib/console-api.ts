@@ -41,6 +41,7 @@ export interface Permissions {
   can_publish: boolean;
   can_manage_rules: boolean;
   can_manage_config: boolean;
+  can_manage_users: boolean;
   approval_mode: 'OFF' | 'SINGLE_REVIEW' | 'MULTI_LEVEL';
 }
 
@@ -447,6 +448,19 @@ export interface OncallReportRecord {
   created_at: string | null;
 }
 
+// ---------------- 用户管理（仅系统管理员） ----------------
+
+export interface UserAdminItem {
+  id: string;
+  email: string;
+  name: string | null;
+  role: string;
+  role_label: string;
+  status: string;
+  created_at: string | null;
+  last_login: string | null;
+}
+
 // ---------------- API 函数 ----------------
 
 export const consoleApi = {
@@ -542,4 +556,19 @@ export const consoleApi = {
   listCmdbAssets: (q?: string) =>
     invoke<{ items: CmdbAsset[] }>(`/api/v1/console/agent/cmdb${q ? `?q=${encodeURIComponent(q)}` : ''}`),
   listOncallReports: () => invoke<{ items: OncallReportRecord[] }>('/api/v1/console/agent/oncall-reports'),
+
+  // 用户管理（仅系统管理员）
+  listUsers: (params?: { q?: string; status?: string; skip?: number; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set('q', params.q);
+    if (params?.status) qs.set('status', params.status);
+    if (params?.skip) qs.set('skip', String(params.skip));
+    if (params?.limit) qs.set('limit', String(params.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return invoke<Paged<UserAdminItem>>(`/api/v1/users${suffix}`);
+  },
+  createUser: (body: { email: string; name?: string; role: string; status?: string }) =>
+    invoke<UserAdminItem>('/api/v1/users', 'POST', body),
+  updateUser: (userId: string, body: { name?: string; role?: string; status?: string }) =>
+    invoke<UserAdminItem>(`/api/v1/users/${encodeURIComponent(userId)}`, 'PUT', body),
 };
