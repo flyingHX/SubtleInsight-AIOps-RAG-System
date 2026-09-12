@@ -495,7 +495,7 @@ export const consoleApi = {
   rollbackCase: (caseId: string, version: number) =>
     invoke<KbCase>(`/api/v1/console/kb/cases/${encodeURIComponent(caseId)}/rollback`, 'POST', { version }),
   scanDuplicates: () => invoke<{ groups: MergeGroup[] }>('/api/v1/console/kb/duplicates'),
-  listMergeProposals: () => invoke<MergeProposal[]>('/api/v1/console/kb/merge-proposals'),
+  listMergeProposals: () => invoke<Paged<MergeProposal>>('/api/v1/console/kb/merge-proposals'),
   createMergeProposal: (body: { master_case_id: string; merged_case_ids: string[]; reason: string }) =>
     invoke<{ proposal: MergeProposal; auto_merged: boolean; approval_request_id?: number }>(
       '/api/v1/console/kb/merge-proposals', 'POST', body,

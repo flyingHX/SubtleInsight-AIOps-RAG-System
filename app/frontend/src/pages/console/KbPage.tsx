@@ -492,7 +492,7 @@ function MergeTab() {
   });
 
   const groups = scanQuery.data?.groups ?? [];
-  const proposals = proposalsQuery.data ?? [];
+  const proposals = proposalsQuery.data?.items ?? [];
 
   return (
     <div className="space-y-4">
