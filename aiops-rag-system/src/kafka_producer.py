@@ -25,6 +25,11 @@ class KafkaProducerWrapper:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Kafka producer connect failed: %s", exc)
 
+    @property
+    def healthy(self) -> bool:
+        """底层生产者客户端是否可用（供就绪探针使用）。"""
+        return self._producer is not None
+
     def send(self, topic: str, event: dict) -> bool:
         target = topic or self.topic
         if self._producer is None:

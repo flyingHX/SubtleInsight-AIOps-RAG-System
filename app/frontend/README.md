@@ -1,5 +1,7 @@
 # Shadcn-UI Template Usage Instructions
 
+> 项目定位：本目录是 AIOps 运营控制台前端（React + Vite + shadcn/ui）。项目总览与目录关系见仓库根目录 `README.md`，使用手册见 `docs/CONSOLE_USER_GUIDE.md`，帮助中心页面为 `/help`。
+
 ## technology stack
 
 This project is built with:

@@ -20,6 +20,8 @@ class FakeEngine:
 
 
 class FakeProducer:
+    healthy = True
+
     def __init__(self):
         self.sent = []
 
@@ -35,6 +37,9 @@ class FakeRedis:
     def __init__(self):
         self.events = {}
 
+    def ping(self):
+        return True
+
     def get_topology(self, service_name):
         return None
 
@@ -46,6 +51,9 @@ class FakeRedis:
 
 
 class FakeMilvus:
+    def is_connected(self):
+        return True
+
     def update_feedback(self, case_id, delta):
         return delta
 
@@ -169,3 +177,10 @@ def test_close_case_writes_knowledge(client):
     assert resp.status_code == 200
     assert resp.json()["case_id"] == "case_test_001"
     assert runtime.get_pipeline().written == [event_id]
+
+
+def test_healthz_and_readyz(client):
+    assert client.get("/healthz").json() == {"status": "ok"}
+    body = client.get("/readyz").json()
+    assert body["status"] == "ok"
+    assert body["checks"] == {"kafka": True, "redis": True, "milvus": True}

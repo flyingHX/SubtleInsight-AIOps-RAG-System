@@ -1,4 +1,4 @@
-/** 帮助中心：控制台使用手册与常见问题；完整文档见 app/docs/ 目录。 */
+/** 帮助中心：控制台使用手册与常见问题；完整文档见仓库 docs/ 目录。 */
 import Markdown from 'markdown-to-jsx';
 import { BookOpenText, LifeBuoy } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -103,7 +103,7 @@ export default function HelpPage() {
         <div>
           <h1 className="text-lg font-semibold tracking-tight">帮助中心</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            控制台使用手册与常见问题；完整 Markdown 文档见仓库 app/docs/ 目录。
+            控制台使用手册与常见问题；完整 Markdown 文档见仓库 docs/ 目录。
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground">

@@ -1,7 +1,7 @@
 # AIOps 运营控制台运维部署方案手册
 
-> 适用范围：`/workspace/app`（React + Vite 前端 + FastAPI 后端 + Atoms Cloud 托管 PostgreSQL）。
-> 注意：与 `/workspace/aiops-rag-system`（Python 流水线，含 Milvus/Kafka/Redis/ES docker-compose）相互独立。
+> 适用范围：整个 AIOps 项目——运营控制台 `/workspace/app`（React + Vite 前端 + FastAPI 后端 + Atoms Cloud 托管 PostgreSQL）与 RAG 流水线 `/workspace/aiops-rag-system`（Python，含 Milvus/Kafka/Redis/ES docker-compose），两者独立部署。
+> 项目级文档统一存放于 `/workspace/docs`（本手册所在目录）；目录关系见根目录 `README.md`。
 
 ## 1. 系统组成
 
@@ -378,3 +378,162 @@ kubectl rollout undo deploy/aiops-console-backend     # 一键回滚上一版本
 | 每日定时 | `10 2 * * * cd /opt/app/backend && pg_dump ... && find /var/backups/aiops -mtime +30 -delete` | — |
 
 - RPO ≤ 24h（每日全量），RTO ≤ 1h（脚本化恢复 + 序列修复 + 巡检）。审计日志（audit_logs）保留 ≥ 180 天。
+
+## 21. 中间件架构总览（RAG 流水线）
+
+### 21.1 架构图
+
+```text
+                 ┌────────────────── 控制台平面（/workspace/app）──────────────────┐
+                 │ React 前端(3000) ──/api 代理──▶ FastAPI 后端(8000) ──▶ PostgreSQL │
+                 │        认证 OIDC/JWT、AIHub 由 Atoms Cloud 托管                   │
+                 └─────────────────────────────────────────────────────────────────┘
+                       （业务语义衔接：事件 / 案例 / 规则 / 审批，两平面独立部署）
+
+外部监控源（Alertmanager / Zabbix / APM / 日志平台）
+        │  POST /api/v1/webhook
+        ▼
+┌────────────────────┐   标准化事件    ┌───────────────┐
+│ FastAPI 流水线 API  │ ──────────────▶│ Kafka 9092     │
+│ Drain 模板+规则分类 │   事件暂存 7 天 │ standardized-  │
+│ （默认 8080/示例    │ ──▶ Redis 6379 │ events 主题    │
+│   8001）            │                └───────┬───────┘
+└────────────────────┘                        │ 三消费者并行
+                          ┌───────────────────┼───────────────────┐
+                          ▼                   ▼                   ▼
+                 ┌────────────────┐  ┌────────────────┐  ┌────────────────┐
+                 │ Dedup Consumer  │  │ RAG Consumer    │  │ Storage        │
+                 │ Redis 指纹去重  │  │ Milvus 双路召回 │  │ Consumer       │
+                 │ 5min 窗口聚合   │  │ +综合重排       │  │ ES 9200 冷存储 │
+                 │ 突发升级+ChatOps│  │ → Few-shot →LLM │  │ /审计          │
+                 └────────────────┘  └────────────────┘  └────────────────┘
+
+Milvus 支撑组件：etcd 2379（元数据） + MinIO 9000（对象存储）
+控制台业务库：PostgreSQL 5432（Atoms Cloud 托管或自建，见 §15）
+```
+
+### 21.2 中间件角色与参数
+
+| 中间件 | 镜像 / 版本 | 端口 | 架构角色 | 关键参数 | 故障影响（降级策略） |
+|--------|-------------|------|----------|----------|----------------------|
+| etcd | quay.io/coreos/etcd:v3.5.14 | 2379（容器网络内） | Milvus 元数据存储 | 配额 4GB（`ETCD_QUOTA_BACKEND_BYTES`）、自动压缩 | Milvus 不可用 → 诊断降级为无上下文直答 |
+| MinIO | minio/minio:RELEASE.2024-05-01 | 9000（容器网络内） | Milvus 对象存储（向量数据落盘） | 默认凭证 minioadmin（内网部署，生产建议修改） | 同上 |
+| Milvus | milvusdb/milvus:v2.4.4 standalone | 19530 gRPC / 9091 healthz | 向量检索：HNSW/IVF_SQ8、dim=1024（BGE-M3）、按月分区、近 3 月分区检索 | 集合 `aiops_knowledge_base`，规格见 §16.2 | 诊断降级（is_fallback=true，LLM 直答） |
+| Kafka | bitnami/kafka:3.4（KRaft 单节点） | 9092 | 告警事件解耦缓冲，标准化与三消费者解耦 | 主题 `standardized-events`；PLAINTEXT 明文（内网） | 事件暂存 Redis 不丢；消费停滞需扩容/跳过 |
+| Redis | redis:7.0-alpine（AOF） | 6379 | 指纹去重（TTL 防抖）、事件暂存（TTL 7 天）、CMDB 拓扑缓存（1h）、5min 窗口聚合 | `REDIS_URL=redis://localhost:6379/0` | 去重 fail-open：告警不丢但可能重复 |
+| Elasticsearch | elasticsearch:8.12.2 单节点 | 9200 | 冷存储与审计缓冲（标准化事件归档） | heap 512MB（`ES_JAVA_OPTS`）、无安全插件（内网） | 仅冷存储/审计缺失，主链路不受影响 |
+| PostgreSQL | Atoms Cloud 托管或自建 | 5432 | 控制台业务库（11 张业务表 + users） | 连接串 `DATABASE_URL`，见 §15 | 控制台不可用；流水线不受影响 |
+
+### 21.3 数据流说明
+
+1. 外部监控系统调用 `POST /api/v1/webhook`，标准化引擎完成 Drain 模板提取 + 规则分类（目标 P99 < 10ms），生成 `event_id` 与指纹。
+2. 事件同步写入 Redis（TTL 7 天，供人工诊断 / 告警闭环查询）并投递 Kafka `standardized-events`。
+3. **Dedup Consumer**：Redis 指纹 SETNX 防抖 + 5 分钟窗口计数，突发自动升级 severity 后推送 ChatOps。
+4. **RAG Consumer**：BGE-M3 向量化 → Milvus 近 3 月分区双路召回 → 余弦/拓扑/时间衰减/反馈综合重排 → Few-shot Prompt → LLM 强制 JSON 输出（超时/异常自动降级）。
+5. **Storage Consumer**：事件写入 ES 冷存储索引（ES 故障时内存缓冲后丢弃，仅审计）。
+6. 人工反馈（`POST /api/v1/feedback`）回写 Milvus 案例分数影响重排；告警关闭（`POST /api/v1/cases/close`）将根因/方案写入知识库形成闭环。
+7. 控制台平面通过自身 PostgreSQL 与 AIHub 提供人工运营、审批、规则治理；与流水线中间件相互独立。
+
+## 22. 中间件部署指令速查（RAG 流水线）
+
+### 22.1 一键部署
+
+```bash
+cd /workspace/aiops-rag-system
+cp .env.example .env                 # 至少填写 LLM_API_KEY（OpenAI 兼容接口）
+docker compose up -d                 # etcd / minio / milvus / kafka / redis / elasticsearch
+docker compose ps                    # 6 个容器全部 Up
+```
+
+### 22.2 分步启动（首次部署建议，便于定位问题）
+
+```bash
+cd /workspace/aiops-rag-system
+
+# 1) Milvus 三件套：先起元数据与对象存储，再起 Milvus
+docker compose up -d etcd minio
+docker compose up -d milvus
+docker compose ps milvus             # State=Up
+curl -s http://localhost:9091/healthz   # 期望输出：ok
+
+# 2) 消息与缓存
+docker compose up -d kafka redis elasticsearch
+redis-cli ping                                        # 期望：PONG
+curl -s http://localhost:9200/_cluster/health         # status: green/yellow
+
+# 3) 初始化向量库并灌入种子案例
+pip install -r requirements.txt
+python scripts/init_milvus.py        # 幂等：集合/索引/近 3 月分区（生产禁止 --overwrite）
+python scripts/seed_cases.py         # 10 条典型故障 SOP（演示环境）
+
+# 4) 启动流水线 API（lifespan 自动拉起/停止 3 个 Kafka 消费者）
+uvicorn src.main:app --host 0.0.0.0 --port 8001
+```
+
+### 22.3 部署后验证
+
+```bash
+curl -s http://localhost:8001/healthz                       # 存活探针 -> {"status":"ok"}
+curl -s http://localhost:8001/readyz                        # -> {"status":"ok","checks":{"kafka":true,"redis":true,"milvus":true}}；任一依赖不可用对应 checks 为 false，fail-open 不摘除实例
+
+# Webhook 冒烟（告警接入 → 标准化 → Kafka）
+curl -s -X POST http://localhost:8001/api/v1/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"source":"apm","raw_message":"redis.clients.jedis.exceptions.JedisConnectionException: connection timeout","labels":{"service":"order-service","cluster":"prod","severity":"3"},"timestamp":1700000000000}'
+# 期望：{"status":"success","event_id":"evt_...","error_type":"...","confidence":0.xx}
+
+# Kafka 主题与消费组
+docker compose exec kafka kafka-topics.sh --list --bootstrap-server localhost:9092
+docker compose exec kafka kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --all-groups
+
+# 指标与日志
+curl -s http://localhost:8001/metrics | head            # Prometheus 指标
+docker compose logs -f milvus kafka redis elasticsearch  # 各中间件日志
+```
+
+### 22.4 停止与清理
+
+```bash
+docker compose stop            # 停止容器（保留数据卷）
+docker compose start           # 重新启动
+docker compose down            # 删除容器与网络（保留数据卷）
+docker compose down -v         # ⚠️ 连同 etcd_data/minio_data/milvus_data 数据卷一并删除，生产禁止
+```
+
+### 22.5 流水线 API 常驻（systemd）
+
+```ini
+# /etc/systemd/system/aiops-pipeline.service
+[Unit]
+Description=AIOps RAG Pipeline API
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+WorkingDirectory=/opt/aiops-rag-system
+EnvironmentFile=/opt/aiops-rag-system/.env
+ExecStart=/opt/aiops-rag-system/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8001
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload && systemctl enable --now aiops-pipeline
+journalctl -u aiops-pipeline -f
+```
+
+### 22.6 环境变量（`.env`，完整模板见 `aiops-rag-system/.env.example`）
+
+| 变量 | 说明 | 默认/示例 |
+|------|------|-----------|
+| `LLM_API_KEY` | **必填**，OpenAI 兼容接口密钥 | `sk-xxxx` |
+| `LLM_BASE_URL` / `LLM_MODEL` | LLM 服务地址与模型 | DeepSeek 示例见模板 |
+| `MILVUS_HOST` / `MILVUS_PORT` / `MILVUS_COLLECTION` | 向量库连接 | localhost / 19530 / aiops_knowledge_base |
+| `EMBEDDING_MODEL_PATH` / `EMBEDDING_DIM` | Embedding 模型（BGE-M3），留空走降级向量 | BAAI/bge-m3 / 1024 |
+| `KAFKA_BOOTSTRAP_SERVERS` / `KAFKA_TOPIC_STANDARDIZED` | Kafka 连接与主题 | localhost:9092 / standardized-events |
+| `REDIS_URL` | Redis 连接 | redis://localhost:6379/0 |
+| `ES_HOST` / `ES_INDEX` | ES 冷存储 | http://localhost:9200 / aiops-events |
+| `SERVICE_PORT` | 流水线 API 端口 | 8080（部署示例 8001，避开控制台 8000） |

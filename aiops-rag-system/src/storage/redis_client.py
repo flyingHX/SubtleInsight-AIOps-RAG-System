@@ -15,6 +15,14 @@ class RedisClient:
     def __init__(self, redis_url: str):
         self._redis = Redis.from_url(redis_url, decode_responses=True)
 
+    def ping(self) -> bool:
+        """连通性探测（供就绪探针使用）。"""
+        try:
+            return bool(self._redis.ping())
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Redis ping failed: %s", exc)
+            return False
+
     # ---------- 指纹去重 ----------
     def first_seen(self, fingerprint: str, ttl_seconds: int = 3600) -> bool:
         """指纹首次出现返回 True，重复返回 False（SETNX 语义）。"""

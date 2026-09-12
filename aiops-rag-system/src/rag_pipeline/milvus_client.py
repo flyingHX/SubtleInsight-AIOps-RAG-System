@@ -49,6 +49,10 @@ class MilvusClient:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Milvus connect failed (%s:%s): %s", self.host, self.port, exc)
 
+    def is_connected(self) -> bool:
+        """连接状态（供就绪探针使用）。"""
+        return self._connected
+
     def _collection(self):
         from pymilvus import Collection, utility
 
