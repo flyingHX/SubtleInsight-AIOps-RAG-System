@@ -251,6 +251,22 @@ export interface ConfigItem {
   value: string;
   description: string;
   is_default: boolean;
+  /** 密钥类配置（API Key）：后端返回脱敏值，永不明文回显 */
+  is_secret?: boolean;
+}
+
+/** LLM/Embedding 配置连通性自检结果 */
+export interface LlmTestResult {
+  chat: { ok: boolean; model?: string; latency_ms?: number; sample?: string; error?: string };
+  embedding: {
+    enabled: boolean;
+    ok?: boolean;
+    model?: string;
+    dims?: number | null;
+    latency_ms?: number;
+    error?: string;
+    note?: string;
+  };
 }
 
 export interface MergeGroup {
@@ -507,6 +523,7 @@ export const consoleApi = {
   listConfigs: () => invoke<{ items: ConfigItem[] }>('/api/v1/console/configs'),
   updateConfig: (key: string, value: string) =>
     invoke<{ key: string; value: string }>('/api/v1/console/configs', 'PUT', { key, value }),
+  testLlmConfig: () => invoke<LlmTestResult>('/api/v1/console/configs/llm-test', 'POST', {}),
 
   // Agent：诊断 / 知识治理 / 值班
   agentDiagnose: (eventId: number) =>

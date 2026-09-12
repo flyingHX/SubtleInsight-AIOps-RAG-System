@@ -1,10 +1,15 @@
-"""AI 诊断能力：演示版 RAG 召回 + deepseek-v4-flash 结构化根因诊断。
+"""AI 诊断能力：业务 RAG 召回 + Embedding 语义加分 + 控制台可配置 LLM 结构化根因诊断。
 
 流程：
 1. 读取事件与知识案例（读阶段，随后提交关闭事务）；
 2. 按业务规则召回 top-N 相似案例（error_type / service / cluster / 模板关键词）；
-3. 调用 AIHubService（deepseek-v4-flash）生成 JSON 诊断，带超时与一次修复重试；
-4. 持久化诊断结果到事件表并写审计。
+3. 若配置中心启用 Embedding（embedding_model 等），追加语义向量相似度加分重排；
+4. 通过 llm_runtime（模型/温度/接入方式由控制台配置中心驱动）生成 JSON 诊断，
+   带超时与一次修复重试；
+5. 持久化诊断结果到事件表并写审计。
+
+LLM 默认走平台内置 AIHub（llm_provider=atoms_hub），管理员可在配置中心切换为
+自建 OpenAI 兼容接口（openai_compatible + base_url/api_key/模型名），变更立即生效。
 """
 import asyncio
 import json
@@ -19,15 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.Events import Events
 from models.kb_cases import Kb_cases
-from schemas.aihub import ChatMessage, GenTxtRequest
-from services.aihub import AIHubService
+from schemas.aihub import ChatMessage
+from services import llm_runtime
 from services.console_common import get_config, write_audit, now_iso
 
 logger = logging.getLogger(__name__)
-
-DIAGNOSE_MODEL = "deepseek-v4-flash"
-
-aihub = AIHubService()
 
 DIAGNOSIS_SYSTEM_PROMPT = """你是资深 SRE 根因诊断助手。基于给定的告警信息和相似历史案例，输出严格的 JSON 诊断结果。
 
@@ -86,6 +87,49 @@ def build_candidates(cases: List[Kb_cases], event: Events, top_n: int = 3) -> Li
             }
         )
     return candidates
+
+
+def _embed_text_for_event(event: Events) -> str:
+    """构造告警侧的 Embedding 输入文本。"""
+    return f"{event.template or ''}\n{event.service_name or ''}\n{event.raw_log or ''}".strip()[:1000]
+
+
+def _embed_text_for_case(case: Kb_cases) -> str:
+    """构造知识案例侧的 Embedding 输入文本。"""
+    return (
+        f"{case.alert_template or ''}\n{case.error_type or ''}\n"
+        f"{case.service_name or ''}\n{case.root_cause or ''}"
+    ).strip()[:1000]
+
+
+async def apply_embedding_rerank(
+    db: AsyncSession, event: Events, cases: List[Kb_cases], candidates: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Embedding 语义加分：对业务重排后的候选案例计算余弦相似度并加权。
+
+    - 未配置 Embedding（embedding_model 为空）时返回 None，保持纯业务重排；
+    - 调用失败静默降级（不阻断诊断主链路）；
+    - 加分权重 0.5 * cosine，score 仍归一化到 0~0.99 并重新排序。
+    """
+    if not candidates:
+        return None
+    candidate_ids = {cand["case_id"] for cand in candidates}
+    ranked_cases = [case for case in cases if case.case_id in candidate_ids]
+    vectors = await llm_runtime.embed_texts(
+        db,
+        [_embed_text_for_event(event)] + [_embed_text_for_case(case) for case in ranked_cases],
+    )
+    if not vectors or len(vectors) != len(ranked_cases) + 1:
+        return None
+    base_vector = vectors[0]
+    vector_by_case = {case.case_id: vectors[i + 1] for i, case in enumerate(ranked_cases)}
+    for cand in candidates:
+        sim = llm_runtime.cosine_similarity(base_vector, vector_by_case.get(cand["case_id"], []))
+        if sim > 0:
+            cand["embedding_score"] = round(sim, 4)
+            cand["score"] = round(min(0.99, cand["score"] + 0.5 * sim), 4)
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    return {"applied": True, "boost_weight": 0.5, "reranked": True}
 
 
 def build_messages(event: Events, candidates: List[Dict[str, Any]]) -> List[ChatMessage]:
@@ -182,6 +226,7 @@ async def run_diagnosis(db: AsyncSession, event_id: int, actor: str) -> Dict[str
 
     started = time.perf_counter()
     candidates = build_candidates(cases, event)
+    embedding_meta = await apply_embedding_rerank(db, event, cases, candidates)
     rag_ms = (time.perf_counter() - started) * 1000.0
 
     if not candidates:
@@ -210,19 +255,19 @@ async def run_diagnosis(db: AsyncSession, event_id: int, actor: str) -> Dict[str
     top_score = candidates[0]["score"]
 
     timeout_seconds = int(await get_config(db, "llm_timeout_seconds", "45") or 45)
+    model_name = await llm_runtime.get_llm_model_name(db)
     messages = build_messages(event, candidates)
     diagnosis: Optional[Dict[str, Any]] = None
     last_error = ""
     try:
         for attempt in range(2):
             try:
-                request = GenTxtRequest(
-                    model=DIAGNOSE_MODEL,
-                    messages=messages,
-                    temperature=0.2,
+                response = await llm_runtime.llm_chat(
+                    db,
+                    messages,
                     max_tokens=1200,
+                    timeout=timeout_seconds,
                 )
-                response = await asyncio.wait_for(aihub.gentxt(request), timeout=timeout_seconds)
                 payload = extract_json_payload(response.content)
                 diagnosis = validate_diagnosis(payload)
                 if diagnosis is not None:
@@ -282,8 +327,9 @@ async def run_diagnosis(db: AsyncSession, event_id: int, actor: str) -> Dict[str
         target_type="event",
         target_id=event.id,
         after={
-            "model": DIAGNOSE_MODEL,
+            "model": model_name,
             "rag_score": top_score,
+            "embedding_boost": bool(embedding_meta),
             "confidence": diagnosis["confidence"],
             "low_confidence": diagnosis["confidence"] < threshold,
         },
@@ -298,10 +344,11 @@ async def run_diagnosis(db: AsyncSession, event_id: int, actor: str) -> Dict[str
             "score": top_score,
             "ms": round(rag_ms, 2),
             "candidates": candidates,
+            "embedding": embedding_meta,
         },
         "diagnosis": {
             **diagnosis,
-            "model": DIAGNOSE_MODEL,
+            "model": model_name,
             "low_confidence": diagnosis["confidence"] < threshold,
             "threshold": threshold,
         },

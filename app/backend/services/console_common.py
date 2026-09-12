@@ -43,6 +43,14 @@ CONFIG_DEFAULTS: Dict[str, str] = {
     "confidence_threshold": "0.75",
     "rerank_weight_json": '{"cosine":0.5,"topology":0.2,"time_decay":0.1,"feedback":0.2}',
     "llm_timeout_seconds": "45",
+    "llm_provider": "atoms_hub",
+    "llm_base_url": "",
+    "llm_api_key": "",
+    "llm_model": "deepseek-v4-flash",
+    "llm_temperature": "0.2",
+    "embedding_base_url": "",
+    "embedding_api_key": "",
+    "embedding_model": "",
     "feature_flags_json": '{"auto_diagnose":true,"dedup_scan":true}',
     "default_role": "viewer",
     "role_bindings_json": '{"demo-operator@atoms.dev":"operator","demo-sre@atoms.dev":"sre","demo-lead@atoms.dev":"approver","demo-admin@atoms.dev":"sys_admin"}',
@@ -54,6 +62,14 @@ CONFIG_DESCRIPTIONS: Dict[str, str] = {
     "confidence_threshold": "诊断置信度阈值（0~1），低于阈值标记为低置信",
     "rerank_weight_json": "重排权重 JSON（cosine/topology/time_decay/feedback）",
     "llm_timeout_seconds": "LLM 诊断超时时间（秒，10~300）",
+    "llm_provider": "LLM 接入方式：atoms_hub（平台内置 AIHub）/ openai_compatible（自建 OpenAI 兼容接口）",
+    "llm_base_url": "LLM OpenAI 兼容 Base URL（openai_compatible 时必填，如 https://api.deepseek.com/v1）",
+    "llm_api_key": "LLM API Key（加密存储、脱敏展示；留空清除）",
+    "llm_model": "LLM Chat 模型名称（诊断与三类 Agent 共用，如 deepseek-v4-flash）",
+    "llm_temperature": "LLM 采样温度（0~2，默认 0.2）",
+    "embedding_base_url": "Embedding Base URL（缺省回退 llm_base_url）",
+    "embedding_api_key": "Embedding API Key（加密存储、脱敏展示；缺省回退 llm_api_key）",
+    "embedding_model": "Embedding 模型名称（配置后启用诊断 RAG 语义加分，如 bge-m3）",
     "feature_flags_json": "功能开关 JSON（auto_diagnose/dedup_scan 等）",
     "default_role": "未绑定角色用户的默认角色",
     "role_bindings_json": "角色绑定 JSON（email -> role）",
@@ -229,6 +245,35 @@ def validate_config_value(key: str, value: str) -> Tuple[bool, str]:
             return False, f"{key} 必须是合法 JSON"
         if not isinstance(parsed, dict):
             return False, f"{key} 必须是 JSON 对象"
+        return True, "ok"
+    if key == "llm_provider":
+        if value not in ("atoms_hub", "openai_compatible"):
+            return False, "llm_provider 仅支持 atoms_hub / openai_compatible"
+        return True, "ok"
+    if key in ("llm_base_url", "embedding_base_url"):
+        value = value.strip()
+        if value and not value.startswith(("http://", "https://")):
+            return False, f"{key} 必须以 http:// 或 https:// 开头（或留空）"
+        return True, "ok"
+    if key in ("llm_api_key", "embedding_api_key"):
+        if "****" in value:
+            return False, f"{key} 展示为脱敏格式，请输入完整 API Key（或留空清除）"
+        return True, "ok"
+    if key == "llm_model":
+        if not value.strip() or "****" in value:
+            return False, "llm_model 必须是有效的模型名称"
+        return True, "ok"
+    if key == "llm_temperature":
+        try:
+            num = float(value)
+        except ValueError:
+            return False, "llm_temperature 必须是数字"
+        if not (0 <= num <= 2):
+            return False, "llm_temperature 必须在 0~2 之间"
+        return True, "ok"
+    if key == "embedding_model":
+        if "****" in value:
+            return False, "embedding_model 配置值无效"
         return True, "ok"
     if key == "default_role":
         if value not in ROLE_LEVELS:

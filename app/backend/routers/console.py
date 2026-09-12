@@ -18,6 +18,13 @@ from models.kb_cases import Kb_cases
 from schemas.auth import UserResponse
 from services import console_kb
 from services.console_ai import run_diagnosis
+from services.llm_runtime import (
+    SECRET_CONFIG_KEYS,
+    decrypt_secret,
+    encrypt_secret,
+    mask_secret,
+    test_llm_connectivity,
+)
 from services.console_common import (
     CONFIG_DEFAULTS,
     CONFIG_DESCRIPTIONS,
@@ -687,14 +694,20 @@ async def list_configs(
     await require_role(db, current_user, "sys_admin")
     rows_result = await db.execute(select(Console_configs).order_by(Console_configs.config_key))
     stored = {row.config_key: row.config_value for row in rows_result.scalars().all()}
+    secret_keys = set(SECRET_CONFIG_KEYS)
     items = []
     for key in sorted(set(CONFIG_DEFAULTS) | set(stored)):
+        raw_value = stored.get(key, CONFIG_DEFAULTS.get(key, ""))
+        if key in secret_keys:
+            # API Key 永不明文回显：统一脱敏展示（如 sk-a****wxyz）
+            raw_value = mask_secret(decrypt_secret(raw_value))
         items.append(
             {
                 "key": key,
-                "value": stored.get(key, CONFIG_DEFAULTS.get(key, "")),
+                "value": raw_value,
                 "description": CONFIG_DESCRIPTIONS.get(key, ""),
                 "is_default": key not in stored,
+                "is_secret": key in secret_keys,
             }
         )
     return {"items": items}
@@ -715,14 +728,52 @@ async def update_config(
     )
     row = result.scalar_one_or_none()
     before_value = row.config_value if row else None
-    saved = await set_config(db, body.key, body.value)
+    value_to_store = body.value
+    if body.key in SECRET_CONFIG_KEYS:
+        # API Key 加密持久化（Fernet）；空串表示清除
+        value_to_store = encrypt_secret(body.value) if body.value.strip() else ""
+    saved = await set_config(db, body.key, value_to_store)
+    if body.key in SECRET_CONFIG_KEYS:
+        # 审计快照同样脱敏，避免明文密钥落入审计日志
+        before_display = mask_secret(decrypt_secret(before_value or "")) or "(已清除)"
+        after_display = mask_secret(decrypt_secret(saved.config_value or "")) or "(已清除)"
+    else:
+        before_display = before_value
+        after_display = saved.config_value
     await write_audit(
         db,
         actor=current_user.email or current_user.id,
         action="config_update",
         target_type="console_config",
         target_id=body.key,
-        before={"value": before_value},
-        after={"value": saved.config_value},
+        before={"value": before_display},
+        after={"value": after_display},
     )
-    return {"key": body.key, "value": saved.config_value}
+    display_value = (
+        mask_secret(decrypt_secret(saved.config_value or ""))
+        if body.key in SECRET_CONFIG_KEYS
+        else saved.config_value
+    )
+    return {"key": body.key, "value": display_value}
+
+
+@router.post("/configs/llm-test")
+async def test_llm_config(
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理员连通性自检：按当前配置真实调用一次 Chat（及已启用的 Embedding）。"""
+    await require_role(db, current_user, "sys_admin")
+    result = await test_llm_connectivity(db)
+    await write_audit(
+        db,
+        actor=current_user.email or current_user.id,
+        action="llm_config_test",
+        target_type="console_config",
+        target_id="llm_runtime",
+        after={
+            "chat_ok": bool(result["chat"].get("ok")),
+            "embedding_ok": bool(result["embedding"].get("ok", False)),
+        },
+    )
+    return result

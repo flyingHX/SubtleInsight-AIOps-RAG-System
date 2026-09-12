@@ -15,7 +15,6 @@
 - kb_governance：AI 起草失败仅保留聚类统计与合并提案
 - oncall：AI 失败生成确定性统计报告
 """
-import asyncio
 import json
 import logging
 import re
@@ -35,12 +34,10 @@ from models.kb_change_sets import Kb_change_sets
 from models.kb_merge_proposals import Kb_merge_proposals
 from models.oncall_reports import Oncall_reports
 from models.rule_versions import Rule_versions
-from schemas.aihub import ChatMessage, GenTxtRequest
+from schemas.aihub import ChatMessage
 from schemas.auth import UserResponse
-from services import console_kb
-from services.aihub import AIHubService
+from services import console_kb, llm_runtime
 from services.console_ai import (
-    DIAGNOSE_MODEL,
     extract_json_payload,
     run_diagnosis,
     score_case,
@@ -49,9 +46,6 @@ from services.console_common import get_config, now_iso, write_audit
 
 logger = logging.getLogger(__name__)
 
-aihub = AIHubService()
-
-AGENT_MODEL = DIAGNOSE_MODEL
 MAX_ITERATIONS = 6
 SEVERITY_RANK = {"critical": 3, "warning": 2, "info": 1}
 WINDOW_DELTAS_HOURS = {"1h": 1, "24h": 24, "7d": 168}
@@ -96,7 +90,7 @@ ONCALL_SYSTEM_PROMPT = """你是值班 Agent。基于给定时间窗内的告警
 要求：
 - 优先级判断：涉及 critical 且影响多个系统 → P0/P1；仅 warning → P2；仅 info → P3；
 - 处置动作结合各系统负责人与已知知识库方案，必须具体可执行；
-- chatops_text 使用纯文本，用换行与序号组织，@负责人 用邮箱前缀，全文控制在 600 字以内；
+- chatops_text 使用纯文本，第一行必须以【值班告警汇总】开头，用换行与序号组织，@负责人 用邮箱前缀，全文控制在 600 字以内；
 - 只输出一个完整闭合的 JSON 对象。"""
 
 
@@ -172,9 +166,9 @@ async def _flush(db: AsyncSession) -> None:
 
 
 async def _llm_chat(db: AsyncSession, messages: List[ChatMessage], max_tokens: int = 1600):
+    """LLM Chat：模型/温度/接入方式由控制台配置中心驱动（llm_runtime）。"""
     timeout = int(await get_config(db, "llm_timeout_seconds", "45") or 45)
-    request = GenTxtRequest(model=AGENT_MODEL, messages=messages, temperature=0.2, max_tokens=max_tokens)
-    return await asyncio.wait_for(aihub.gentxt(request), timeout=timeout)
+    return await llm_runtime.llm_chat(db, messages, max_tokens=max_tokens, timeout=timeout)
 
 
 async def _save_session(
@@ -182,6 +176,7 @@ async def _save_session(
     *,
     session_type: str,
     status: str,
+    model: str,
     event_id: Optional[int],
     result: Dict[str, Any],
     trace: List[Dict[str, Any]],
@@ -195,7 +190,7 @@ async def _save_session(
         session_type=session_type,
         event_id=event_id,
         status=status,
-        model=AGENT_MODEL,
+        model=model,
         iterations=iterations,
         duration_ms=round(elapsed_ms, 2),
         tool_trace=json.dumps(trace, ensure_ascii=False)[:20000],
@@ -551,6 +546,7 @@ async def run_diagnose_agent(db: AsyncSession, user: UserResponse, event_id: int
         raise HTTPException(status_code=404, detail="事件不存在")
 
     tools = _build_diagnose_tools(db, event)
+    model_name = await llm_runtime.get_llm_model_name(db)
     task_prompt = (
         f"请诊断告警：event_id={event.event_id}（数据库主键 {event.id}）。\n"
         "建议流程：get_alert_detail →（按需）query_cmdb 确认主机所属系统/服务/负责人与日志路径 → "
@@ -588,6 +584,7 @@ async def run_diagnose_agent(db: AsyncSession, user: UserResponse, event_id: int
             db,
             session_type="diagnose",
             status="succeeded",
+            model=model_name,
             event_id=event.id,
             result={"conclusion": conclusion, "threshold": threshold},
             trace=loop_result["trace"],
@@ -604,7 +601,7 @@ async def run_diagnose_agent(db: AsyncSession, user: UserResponse, event_id: int
             target_id=event.id,
             after={
                 "session_id": row.id,
-                "model": AGENT_MODEL,
+                "model": model_name,
                 "iterations": loop_result["iterations"],
                 "confidence": conclusion["confidence"],
                 "low_confidence": conclusion["confidence"] < threshold,
@@ -616,7 +613,7 @@ async def run_diagnose_agent(db: AsyncSession, user: UserResponse, event_id: int
             "event_id": event.id,
             "message": "Agent 深度诊断完成",
             "agent": {
-                "model": AGENT_MODEL,
+                "model": model_name,
                 "iterations": loop_result["iterations"],
                 "duration_ms": round(elapsed, 2),
                 "tool_trace": loop_result["trace"],
@@ -636,6 +633,7 @@ async def run_diagnose_agent(db: AsyncSession, user: UserResponse, event_id: int
         db,
         session_type="diagnose",
         status=status,
+        model=model_name,
         event_id=event.id,
         result={"fallback": "single_round_diagnosis", "diagnosis": fallback, "fallback_error": fallback_error},
         trace=[],
@@ -852,6 +850,7 @@ async def run_kb_governance_agent(db: AsyncSession, user: UserResponse) -> Dict[
     """知识治理 Agent：聚类告警 → AI 起草案例（走审批）→ 合并提案。"""
     actor = user.email or user.id
     started = time.perf_counter()
+    model_name = await llm_runtime.get_llm_model_name(db)
 
     clusters = await _cluster_recent_events(db)
     status = "succeeded"
@@ -907,6 +906,7 @@ async def run_kb_governance_agent(db: AsyncSession, user: UserResponse) -> Dict[
         db,
         session_type="kb_governance",
         status=status,
+        model=model_name,
         event_id=None,
         result={
             "analysis": analysis,
@@ -950,7 +950,7 @@ async def run_kb_governance_agent(db: AsyncSession, user: UserResponse) -> Dict[
             "drafts_submitted": drafts_submitted,
             "drafts_skipped": drafts_skipped,
             "merge_result": merge_result,
-            "model": AGENT_MODEL,
+            "model": model_name,
             "duration_ms": round(elapsed, 2),
         },
     }
@@ -1056,6 +1056,9 @@ def _validate_oncall_report(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]
     chatops_text = str(payload.get("chatops_text") or "").strip()
     if not impact_summary or not chatops_text:
         return None
+    # ChatOps 文本格式统一：确保以【值班告警汇总】标记开头，保证可直接复制到群
+    if not chatops_text.startswith("【值班告警汇总】"):
+        chatops_text = f"【值班告警汇总】\n{chatops_text}"
     priority = str(payload.get("priority") or "P1").strip().upper()
     if priority not in ONCALL_PRIORITIES:
         priority = "P1"
@@ -1075,6 +1078,7 @@ def _validate_oncall_report(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]
 async def run_oncall_agent(db: AsyncSession, user: UserResponse, time_window: str) -> Dict[str, Any]:
     """值班 Agent：时间窗影响面汇总 + ChatOps 处置建议，持久化到 oncall_reports。"""
     actor = user.email or user.id
+    model_name = await llm_runtime.get_llm_model_name(db)
     window = time_window if time_window in WINDOW_DELTAS_HOURS else "24h"
     since = datetime.now(timezone.utc) - timedelta(hours=WINDOW_DELTAS_HOURS[window])
 
@@ -1155,6 +1159,7 @@ async def run_oncall_agent(db: AsyncSession, user: UserResponse, time_window: st
         db,
         session_type="oncall",
         status=status,
+        model=model_name,
         event_id=None,
         result={"report_id": report_row.id, "priority": report["priority"], "impact_summary": report["impact_summary"]},
         trace=[
