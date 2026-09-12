@@ -60,8 +60,12 @@ const APPROVAL_MODE_LABEL: Record<string, string> = {
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const perms = usePermissions();
-  // 用户与角色管理仅系统管理员可见
-  const items = NAV_ITEMS.filter((item) => item.to !== '/users' || perms?.can_manage_users);
+  // 无权限的功能入口不显示：用户与角色、审计与配置仅系统管理员可见
+  const items = NAV_ITEMS.filter((item) => {
+    if (item.to === '/users') return !!perms?.can_manage_users;
+    if (item.to === '/ops') return !!perms?.can_manage_config;
+    return true;
+  });
   return (
     <nav className="flex flex-col gap-1">
       {items.map(({ to, label, icon: Icon }) => (

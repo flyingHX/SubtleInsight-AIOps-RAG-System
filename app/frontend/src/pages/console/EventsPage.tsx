@@ -402,10 +402,12 @@ function DetailBody({ detail, result, onDiagnose, diagnosing }: {
 
       <Separator />
 
-      <div>
-        <p className="mb-1.5 text-sm font-semibold">人工反馈闭环</p>
-        <FeedbackSection detail={detail} />
-      </div>
+      {perms?.can_feedback && (
+        <div>
+          <p className="mb-1.5 text-sm font-semibold">人工反馈闭环</p>
+          <FeedbackSection detail={detail} />
+        </div>
+      )}
     </div>
   );
 }

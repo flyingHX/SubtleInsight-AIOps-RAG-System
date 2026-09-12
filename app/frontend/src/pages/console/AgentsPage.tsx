@@ -189,6 +189,7 @@ function DiagnoseTab() {
 
   return (
     <div className="space-y-4">
+      {perms?.can_diagnose && (
       <div className="flex flex-wrap items-end gap-2.5">
         <div className="w-72 min-w-56">
           <Label className="mb-1 text-xs">选择告警事件</Label>
@@ -212,6 +213,7 @@ function DiagnoseTab() {
           {mutation.isPending ? 'Agent 推理中…' : '启动深度诊断'}
         </Button>
       </div>
+      )}
       {eventsQuery.isLoading && <SpinnerLine text="加载告警列表…" />}
 
       {mutation.isPending && (
@@ -323,6 +325,7 @@ function GovernanceTab() {
 
   return (
     <div className="space-y-4">
+      {perms?.can_edit_kb && (
       <div className="flex flex-wrap items-end gap-2.5">
         <div className="w-36">
           <Label className="mb-1 text-xs">统计时间窗</Label>
@@ -337,6 +340,7 @@ function GovernanceTab() {
         </Button>
         <p className="text-xs text-muted-foreground">聚类时间窗内告警簇 → AI 起草案例（走审批）→ 生成合并提案。</p>
       </div>
+      )}
 
       {mutation.isPending && <SpinnerLine text="Agent 正在聚类与起草案例，通常需要十几秒…" />}
 
@@ -461,6 +465,7 @@ function OncallTab() {
 
   return (
     <div className="space-y-4">
+      {perms?.can_diagnose && (
       <div className="flex flex-wrap items-end gap-2.5">
         <div className="w-36">
           <Label className="mb-1 text-xs">统计时间窗</Label>
@@ -474,6 +479,7 @@ function OncallTab() {
           {mutation.isPending ? 'Agent 汇总中…' : '生成值班报告'}
         </Button>
       </div>
+      )}
 
       {mutation.isPending && <SpinnerLine text="Agent 正在统计时间窗影响面并撰写 ChatOps 建议…" />}
 

@@ -29,6 +29,16 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -414,15 +424,14 @@ function CaseDetailDialog({ caseId, onClose }: { caseId: string; onClose: () => 
       >
         {detailQuery.data && (
           <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <Button size="sm" onClick={() => setEditOpen(true)} disabled={!perms?.can_edit_kb}>
-                <PencilLine className="mr-1.5 h-3.5 w-3.5" />
-                编辑案例
-              </Button>
-              {!perms?.can_edit_kb && (
-                <span className="text-xs text-muted-foreground">当前角色（{perms?.role_label}）无编辑权限</span>
-              )}
-            </div>
+            {perms?.can_edit_kb && (
+              <div className="flex items-center gap-2">
+                <Button size="sm" onClick={() => setEditOpen(true)}>
+                  <PencilLine className="mr-1.5 h-3.5 w-3.5" />
+                  编辑案例
+                </Button>
+              </div>
+            )}
 
             <div>
               <p className="mb-1.5 text-sm font-semibold">当前内容</p>
@@ -528,46 +537,52 @@ function CaseDetailDialog({ caseId, onClose }: { caseId: string; onClose: () => 
 
 // ------------------ 去重合并 ------------------
 
-function MergeGroupCard({ group, onCreate }: { group: MergeGroup; onCreate: (master: string, merged: string[], reason: string) => void }) {
+function MergeGroupCard({
+  group,
+  canMerge,
+  onCreate,
+  onCancel,
+}: {
+  group: MergeGroup;
+  canMerge: boolean;
+  onCreate: (master: string, merged: string[], reason: string) => void;
+  onCancel: () => void;
+}) {
   const [master, setMaster] = useState(group.suggested_master);
   const [reason, setReason] = useState('');
-  // 取消的案例仅从本次扫描结果中移除（可随时恢复），不影响案例库数据本身
-  const [cancelled, setCancelled] = useState<string[]>([]);
-  const activeCases = group.cases.filter((c) => !cancelled.includes(c.case_id));
-  const effectiveMaster = activeCases.some((c) => c.case_id === master)
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  // 主案例回退：状态值不在当前组时回落到建议主案例或首个案例
+  const effectiveMaster = group.cases.some((c) => c.case_id === master)
     ? master
-    : (activeCases.find((c) => c.case_id === group.suggested_master)?.case_id ?? activeCases[0]?.case_id ?? '');
-  const merged = activeCases.filter((c) => c.case_id !== effectiveMaster).map((c) => c.case_id);
-
-  if (activeCases.length === 0) {
-    return (
-      <Card className="border-dashed">
-        <CardContent className="flex flex-wrap items-center justify-between gap-2 pt-4 text-xs text-muted-foreground">
-          <span>
-            <span className="font-mono">{group.error_type}</span> · {group.service_name}：本组案例已全部取消，不再参与本次合并。
-          </span>
-          <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={() => setCancelled([])}>
-            恢复全部
-          </Button>
-        </CardContent>
-      </Card>
-    );
-  }
+    : (group.cases.find((c) => c.case_id === group.suggested_master)?.case_id ?? group.cases[0]?.case_id ?? '');
+  const merged = group.cases.filter((c) => c.case_id !== effectiveMaster).map((c) => c.case_id);
 
   return (
-    <Card>
+    <>
+      <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">
+        <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
           <span className="font-mono">{group.error_type}</span>
-          <span className="ml-2 font-normal text-muted-foreground">
+          <span className="font-normal text-muted-foreground">
             {group.service_name} · {group.case_ids.length} 个相似案例
-            {cancelled.length > 0 && <span className="ml-1 text-amber-600">（已取消 {cancelled.length}）</span>}
           </span>
+          {canMerge && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-destructive"
+              title="取消本组扫描结果的合并（案例库数据不受影响，可随时恢复）"
+              onClick={() => setConfirmCancel(true)}
+            >
+              <X className="mr-0.5 h-3 w-3" />
+              取消本次合并
+            </Button>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <RadioGroup value={effectiveMaster} onValueChange={setMaster} className="gap-2">
-          {activeCases.map((c) => (
+          {group.cases.map((c) => (
             <label
               key={c.case_id}
               className={cn(
@@ -584,62 +599,54 @@ function MergeGroupCard({ group, onCreate }: { group: MergeGroup; onCreate: (mas
                 </p>
                 <p className="mt-1 line-clamp-2 text-muted-foreground">{c.root_cause || '（无根因）'}</p>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 shrink-0 px-1.5 text-xs text-muted-foreground hover:text-destructive"
-                title="从本次扫描结果中移除该案例（不影响案例库数据）"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setCancelled((s) => (s.includes(c.case_id) ? s : [...s, c.case_id]));
-                }}
-              >
-                <X className="mr-0.5 h-3 w-3" />
-                取消
-              </Button>
             </label>
           ))}
         </RadioGroup>
-        {cancelled.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-            <span>已取消 {cancelled.length} 个：</span>
-            {cancelled.map((id) => (
-              <button
-                key={id}
-                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 transition-colors hover:bg-accent"
-                title="恢复该案例到本次扫描结果"
-                onClick={() => setCancelled((s) => s.filter((x) => x !== id))}
-              >
-                <span className="font-mono">{id}</span>
-                <Undo2 className="h-3 w-3" />
-              </button>
-            ))}
-          </div>
+        {canMerge && (
+          <>
+            <Input
+              className="h-9 text-xs"
+              placeholder="合并理由（必填）：例如同一故障两次入库，合并保留反馈分最高的案例"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <Button
+              size="sm"
+              disabled={!reason.trim() || merged.length === 0}
+              onClick={() => onCreate(effectiveMaster, merged, reason.trim())}
+            >
+              <GitMerge className="mr-1.5 h-3.5 w-3.5" />
+              合并到 {effectiveMaster}（归档 {merged.length} 个冗余案例）
+            </Button>
+          </>
         )}
-        <Input
-          className="h-9 text-xs"
-          placeholder="合并理由（必填）：例如同一故障两次入库，合并保留反馈分最高的案例"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-        />
-        <Button
-          size="sm"
-          disabled={!reason.trim() || merged.length === 0}
-          onClick={() => onCreate(effectiveMaster, merged, reason.trim())}
-        >
-          <GitMerge className="mr-1.5 h-3.5 w-3.5" />
-          合并到 {effectiveMaster}（归档 {merged.length} 个冗余案例）
-        </Button>
       </CardContent>
-    </Card>
+      </Card>
+      <AlertDialog open={confirmCancel} onOpenChange={setConfirmCancel}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>取消本次合并？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将取消 {group.error_type}（{group.service_name}）这组相似案例的合并：取消后本组不参与本次合并，案例库数据不受影响，可随时在「已取消的扫描结果」区恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>继续合并</AlertDialogCancel>
+            <AlertDialogAction onClick={() => onCancel()}>取消本次合并</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
 function MergeTab() {
   const queryClient = useQueryClient();
   const perms = usePermissions();
+  const canMerge = !!perms?.can_edit_kb;
   const [scanEnabled, setScanEnabled] = useState(false);
+  // 取消以「扫描结果组」为单位：整组退出本次合并流程，可随时恢复，不影响案例库数据
+  const [cancelledGroupKeys, setCancelledGroupKeys] = useState<string[]>([]);
   const scanQuery = useQuery({
     queryKey: ['kb-duplicates'],
     queryFn: () => consoleApi.scanDuplicates(),
@@ -668,6 +675,9 @@ function MergeTab() {
   });
 
   const groups = scanQuery.data?.groups ?? [];
+  const groupKey = (g: MergeGroup) => g.case_ids.join('|');
+  const activeGroups = groups.filter((g) => !cancelledGroupKeys.includes(groupKey(g)));
+  const cancelledGroups = groups.filter((g) => cancelledGroupKeys.includes(groupKey(g)));
   const proposals = proposalsQuery.data?.items ?? [];
 
   return (
@@ -691,16 +701,50 @@ function MergeTab() {
           empty="未发现相似案例簇"
           emptyHint="知识库当前没有满足聚类条件的重复案例"
         >
-          <div className="grid items-start gap-4 lg:grid-cols-2">
-            {groups.map((g) => (
-              <MergeGroupCard
-                key={g.case_ids.join('|')}
-                group={g}
-                onCreate={(master, merged, reason) =>
-                  createMutation.mutate({ master_case_id: master, merged_case_ids: merged, reason })
-                }
-              />
-            ))}
+          <div className="space-y-4">
+            {cancelledGroups.length > 0 && (
+              <Card className="border-dashed border-amber-500/40">
+                <CardContent className="space-y-2 pt-4 text-xs">
+                  <p className="font-medium text-amber-600">
+                    已取消本次合并的扫描结果（{cancelledGroups.length} 组）——案例库数据不受影响，可恢复后重新参与合并
+                  </p>
+                  <ul className="space-y-1.5">
+                    {cancelledGroups.map((g) => (
+                      <li key={groupKey(g)} className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                        <span className="font-mono text-foreground">{g.error_type}</span>
+                        <span>
+                          {g.service_name} · {g.case_ids.length} 个相似案例
+                        </span>
+                        {canMerge && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => setCancelledGroupKeys((s) => s.filter((k) => k !== groupKey(g)))}
+                          >
+                            <Undo2 className="mr-0.5 h-3 w-3" />
+                            恢复
+                          </Button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+            )}
+            <div className="grid items-start gap-4 lg:grid-cols-2">
+              {activeGroups.map((g) => (
+                <MergeGroupCard
+                  key={groupKey(g)}
+                  group={g}
+                  canMerge={canMerge}
+                  onCancel={() => setCancelledGroupKeys((s) => (s.includes(groupKey(g)) ? s : [...s, groupKey(g)]))}
+                  onCreate={(master, merged, reason) =>
+                    createMutation.mutate({ master_case_id: master, merged_case_ids: merged, reason })
+                  }
+                />
+              ))}
+            </div>
           </div>
         </StateGate>
       )}
@@ -726,9 +770,6 @@ function MergeTab() {
             ))}
           </ul>
         </StateGate>
-        {perms && !perms.can_edit_kb && (
-          <p className="mt-2 text-xs text-muted-foreground">当前角色（{perms.role_label}）仅可查看，创建合并提案需要 SRE 及以上角色。</p>
-        )}
       </div>
     </div>
   );
@@ -771,10 +812,12 @@ export default function KbPage() {
             案例编辑走审批流（禁止自审）、版本可回滚、相似案例去重合并，全程写审计日志。
           </p>
         </div>
-        <Button size="sm" onClick={() => setCreateOpen(true)} disabled={!perms?.can_edit_kb}>
-          <Plus className="mr-1.5 h-3.5 w-3.5" />
-          新建案例
-        </Button>
+        {perms?.can_edit_kb && (
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            新建案例
+          </Button>
+        )}
       </div>
 
       <Tabs defaultValue="cases">

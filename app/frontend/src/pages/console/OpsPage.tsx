@@ -413,6 +413,18 @@ function ConfigTab() {
 export default function OpsPage() {
   const perms = usePermissions();
   const canManageConfig = !!perms?.can_manage_config;
+  // 审计与配置整页仅系统管理员可见（侧边栏入口同步隐藏，防止直达 URL 访问）
+  if (!canManageConfig) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-lg font-semibold tracking-tight">审计与配置</h1>
+        <EmptyBlock
+          title="仅系统管理员可访问"
+          hint={`当前角色「${perms?.role_label ?? '未知'}」无权限查看审计日志与配置中心。`}
+        />
+      </div>
+    );
+  }
   return (
     <div className="space-y-4">
       <div>

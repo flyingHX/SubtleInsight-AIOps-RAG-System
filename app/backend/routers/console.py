@@ -668,6 +668,8 @@ async def list_audit_logs(
     current_user: UserResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # 审计日志仅系统管理员可查看（与配置中心一致）
+    await require_role(db, current_user, "sys_admin")
     conditions = []
     if action:
         conditions.append(Audit_logs.action == action)

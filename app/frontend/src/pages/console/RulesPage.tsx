@@ -73,11 +73,13 @@ function RulesTab() {
   });
 
   const canManage = !!perms?.can_manage_rules;
+  const canEdit = !!perms?.can_edit_kb;
   const active = rulesQuery.data?.active;
 
   return (
     <div className="grid items-start gap-4 lg:grid-cols-3">
-      {/* 编辑器 */}
+      {/* 编辑器：无知识库编辑权限的角色不显示 */}
+      {canEdit && (
       <Card className="lg:col-span-2">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">
@@ -103,22 +105,26 @@ function RulesTab() {
               <FileCheck2 className="mr-1.5 h-3.5 w-3.5" />
               {validateMutation.isPending ? '校验中…' : '校验 YAML'}
             </Button>
-            <Input
-              className="h-9 w-56 text-xs"
-              placeholder="变更说明（发布必填）"
-              value={changeNote}
-              onChange={(e) => setChangeNote(e.target.value)}
-            />
-            <Button
-              size="sm"
-              onClick={() => publishMutation.mutate()}
-              disabled={publishMutation.isPending || !content.trim() || !changeNote.trim() || !canManage}
-            >
-              <Upload className="mr-1.5 h-3.5 w-3.5" />
-              {publishMutation.isPending ? '发布中…' : '发布新版本'}
-            </Button>
+            {canManage && (
+              <>
+                <Input
+                  className="h-9 w-56 text-xs"
+                  placeholder="变更说明（发布必填）"
+                  value={changeNote}
+                  onChange={(e) => setChangeNote(e.target.value)}
+                />
+                <Button
+                  size="sm"
+                  onClick={() => publishMutation.mutate()}
+                  disabled={publishMutation.isPending || !content.trim() || !changeNote.trim()}
+                >
+                  <Upload className="mr-1.5 h-3.5 w-3.5" />
+                  {publishMutation.isPending ? '发布中…' : '发布新版本'}
+                </Button>
+              </>
+            )}
           </div>
-          {!canManage && (
+          {canEdit && !canManage && (
             <p className="text-xs text-muted-foreground">
               当前角色（{perms?.role_label}）可编辑与校验，发布需要系统管理员权限。
             </p>
@@ -130,6 +136,7 @@ function RulesTab() {
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* 版本历史 */}
       <Card>
@@ -282,12 +289,11 @@ function UnknownTab() {
                   <span className="ml-auto text-muted-foreground">{fmtTime(t.created_at)}</span>
                 </div>
                 <pre className="log-block max-h-24 overflow-y-auto">{t.template}</pre>
-                {t.status === 'pending' && (
+                {t.status === 'pending' && canOperate && (
                   <div className="flex items-center gap-2">
                     <Button
                       size="sm"
                       onClick={() => setPromoteTarget(t)}
-                      disabled={!canOperate}
                     >
                       <ArrowUpCircle className="mr-1.5 h-3.5 w-3.5" />
                       晋升为规则
@@ -296,14 +302,11 @@ function UnknownTab() {
                       size="sm"
                       variant="outline"
                       onClick={() => discardMutation.mutate(t.id)}
-                      disabled={!canOperate || discardMutation.isPending}
+                      disabled={discardMutation.isPending}
                     >
                       <XCircle className="mr-1.5 h-3.5 w-3.5" />
                       标记废弃
                     </Button>
-                    {!canOperate && (
-                      <span className="text-xs text-muted-foreground">需要 SRE 及以上角色</span>
-                    )}
                   </div>
                 )}
               </CardContent>
