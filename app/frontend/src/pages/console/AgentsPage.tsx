@@ -1,11 +1,15 @@
 /** Agent 工作台：深度诊断 / 知识治理 / 值班报告 / 会话轨迹 / CMDB 资产。 */
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot, BrainCircuit, Database, FileText, History, Search, Users } from 'lucide-react';
+import { Bot, BrainCircuit, ChevronDown, ChevronUp, Database, FileText, History, Search, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   consoleApi,
   errDetail,
+  type AgentCluster,
+  type AgentDiagnoseResult,
+  type AgentDraftOutcome,
+  type AgentKbGovernanceResult,
   type AgentSession,
   type AgentTraceStep,
   type CmdbAsset,
@@ -42,6 +46,59 @@ const SESSION_TYPE_LABEL: Record<string, string> = {
   kb_governance: '知识治理',
   oncall: '值班报告',
 };
+
+const GOVERNANCE_WINDOWS = [
+  { value: '1h', label: '近 1 小时' },
+  { value: '24h', label: '近 24 小时' },
+  { value: '7d', label: '近 7 天' },
+];
+
+/** 从持久化会话行还原深度诊断结果（进入页面时展示最近一次执行结果）。
+ * 后端保存结构：result={"conclusion": {...}, "threshold": n}，模型/轮次/轨迹在会话列上。 */
+function parseDiagnoseSession(session: AgentSession | null | undefined): AgentDiagnoseResult | null {
+  if (!session) return null;
+  const r = (session.result ?? {}) as Record<string, unknown>;
+  const c = r.conclusion as Record<string, unknown> | null | undefined;
+  if (!c || typeof c !== 'object' || typeof c.root_cause !== 'string') return null;
+  return {
+    status: session.status,
+    session_id: session.id,
+    event_id: session.event_id ?? 0,
+    message: `最近一次深度诊断结果（会话 #${session.id}）`,
+    agent: {
+      model: session.model,
+      iterations: session.iterations ?? 0,
+      duration_ms: session.duration_ms ?? 0,
+      tool_trace: session.tool_trace ?? [],
+      conclusion: {
+        root_cause: String(c.root_cause ?? ''),
+        solution: String(c.solution ?? ''),
+        confidence: Number(c.confidence ?? 0),
+        evidence_chain: Array.isArray(c.evidence_chain) ? (c.evidence_chain as string[]) : [],
+        command: typeof c.command === 'string' ? c.command : '',
+        low_confidence: Boolean(c.low_confidence),
+        threshold: typeof r.threshold === 'number' ? r.threshold : undefined,
+      },
+    },
+  };
+}
+
+/** 从持久化会话行还原知识治理结果。后端保存结构：result 顶层含 clusters、drafts 与 merge_result。 */
+function parseGovernanceSession(session: AgentSession | null | undefined): AgentKbGovernanceResult['governance'] | null {
+  if (!session) return null;
+  const r = (session.result ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(r.clusters)) return null;
+  return {
+    time_window: typeof r.time_window === 'string' ? r.time_window : undefined,
+    analysis: typeof r.analysis === 'string' ? r.analysis : '',
+    clusters: r.clusters as AgentCluster[],
+    drafts_submitted: Array.isArray(r.drafts_submitted) ? (r.drafts_submitted as AgentDraftOutcome[]) : [],
+    drafts_skipped: Array.isArray(r.drafts_skipped) ? (r.drafts_skipped as AgentDraftOutcome[]) : [],
+    merge_result: (r.merge_result ?? {}) as Record<string, unknown>,
+    model: session.model,
+    duration_ms: session.duration_ms ?? 0,
+  };
+}
 
 /** 工具轨迹渲染：诊断 Agent 的 tool 步骤与治理/值班 Agent 的 step 步骤统一展示。 */
 function TraceSteps({ steps }: { steps: AgentTraceStep[] }) {
@@ -96,6 +153,7 @@ function EvidenceChain({ items }: { items: string[] }) {
 
 function DiagnoseTab() {
   const perms = usePermissions();
+  const queryClient = useQueryClient();
   const [eventId, setEventId] = useState<string>('');
 
   const eventsQuery = useQuery({
@@ -108,14 +166,26 @@ function DiagnoseTab() {
     if (!eventId && events.length > 0) setEventId(String(events[0].id));
   }, [events, eventId]);
 
+  // 进入页面时展示最近一次诊断结果（优先读取持久化 agent_sessions）
+  const latestQuery = useQuery({
+    queryKey: ['agent-session-latest', 'diagnose'],
+    queryFn: () => consoleApi.listAgentSessions({ session_type: 'diagnose', limit: 1 }),
+  });
+  const latestResult = useMemo(
+    () => parseDiagnoseSession(latestQuery.data?.items?.[0]),
+    [latestQuery.data],
+  );
+
   const mutation = useMutation({
     mutationFn: () => consoleApi.agentDiagnose(Number(eventId)),
-    onSuccess: (res) =>
-      toast.success(res.message || 'Agent 深度诊断完成'),
+    onSuccess: (res) => {
+      toast.success(res.message || 'Agent 深度诊断完成');
+      queryClient.invalidateQueries({ queryKey: ['agent-session-latest'] });
+    },
     onError: (e) => toast.error(`Agent 诊断失败：${errDetail(e)}`),
   });
 
-  const result = mutation.data;
+  const result = mutation.data ?? latestResult;
 
   return (
     <div className="space-y-4">
@@ -152,6 +222,7 @@ function DiagnoseTab() {
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <StatusBadge status={result.status} />
+            {!mutation.data && <Badge variant="secondary">最近一次执行结果</Badge>}
             {result.agent && (
               <>
                 <Badge variant="outline" className="font-mono">{result.agent.model}</Badge>
@@ -231,27 +302,56 @@ function DiagnoseTab() {
 
 function GovernanceTab() {
   const perms = usePermissions();
+  const queryClient = useQueryClient();
+  const [timeWindow, setTimeWindow] = useState('24h');
+  // 进入页面时读取最近一次治理会话（持久化 agent_sessions），重新运行后刷新
+  const latestQuery = useQuery({
+    queryKey: ['agent-session-latest', 'kb_governance'],
+    queryFn: () => consoleApi.listAgentSessions({ session_type: 'kb_governance', limit: 1 }),
+  });
+  const latestSession = latestQuery.data?.items?.[0] ?? null;
+  const latestGovernance = useMemo(() => parseGovernanceSession(latestSession), [latestSession]);
   const mutation = useMutation({
-    mutationFn: () => consoleApi.agentKbGovernance(),
-    onSuccess: (res) => toast.success(res.message || '知识治理 Agent 运行完成'),
+    mutationFn: () => consoleApi.agentKbGovernance(timeWindow),
+    onSuccess: (res) => {
+      toast.success(res.message || '知识治理 Agent 运行完成');
+      queryClient.invalidateQueries({ queryKey: ['agent-session-latest'] });
+    },
     onError: (e) => toast.error(`知识治理 Agent 失败：${errDetail(e)}`),
   });
-  const g = mutation.data?.governance;
+  const g = mutation.data?.governance ?? latestGovernance;
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <Button disabled={mutation.isPending || !perms?.can_edit_kb} onClick={() => mutation.mutate()}>
+      <div className="flex flex-wrap items-end gap-2.5">
+        <div className="w-36">
+          <Label className="mb-1 text-xs">统计时间窗</Label>
+          <Select value={timeWindow} onValueChange={setTimeWindow}>
+            <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>{GOVERNANCE_WINDOWS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+        <Button className="h-9" disabled={mutation.isPending || !perms?.can_edit_kb} onClick={() => mutation.mutate()}>
           <Users className="mr-1.5 h-4 w-4" />
           {mutation.isPending ? 'Agent 治理中…' : '运行知识治理 Agent'}
         </Button>
-        <p className="text-xs text-muted-foreground">聚类告警簇 → AI 起草案例（走审批）→ 生成合并提案。</p>
+        <p className="text-xs text-muted-foreground">聚类时间窗内告警簇 → AI 起草案例（走审批）→ 生成合并提案。</p>
       </div>
 
       {mutation.isPending && <SpinnerLine text="Agent 正在聚类与起草案例，通常需要十几秒…" />}
 
       {g && (
         <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            {mutation.data ? (
+              <Badge variant="default">本次执行结果</Badge>
+            ) : (
+              <Badge variant="secondary">
+                最近一次执行结果{latestSession ? `（会话 #${latestSession.id} · ${fmtTime(latestSession.created_at)}）` : ''}
+              </Badge>
+            )}
+            {g.time_window && <Badge variant="outline">时间窗 {g.time_window}</Badge>}
+          </div>
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm">簇分析</CardTitle>
@@ -342,6 +442,7 @@ function OncallTab() {
   const perms = usePermissions();
   const queryClient = useQueryClient();
   const [window, setWindow] = useState('24h');
+  const [expandedReport, setExpandedReport] = useState<number | null>(null);
   const mutation = useMutation({
     mutationFn: () => consoleApi.agentOncallReport(window),
     onSuccess: (res) => {
@@ -487,15 +588,101 @@ function OncallTab() {
             empty="暂无历史报告"
           >
             <div className="space-y-2">
-              {history.map((h) => (
-                <div key={h.id} className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-xs">
-                  <span className="font-mono font-medium">#{h.id}</span>
-                  <Badge variant="outline">{h.time_window}</Badge>
-                  <span className="text-muted-foreground">{h.event_count} 条告警（严重 {h.critical_count} / 警告 {h.warning_count}）</span>
-                  <span className="ml-auto text-muted-foreground">{h.actor} · {fmtTime(h.created_at)}</span>
-                  {h.chatops_text && <CopyButton text={h.chatops_text} label="复制文本" size="xs" />}
-                </div>
-              ))}
+              {history.map((h) => {
+                const open = expandedReport === h.id;
+                const rep = h.report;
+                const systems = h.affected_systems ?? [];
+                const chatops = h.chatops_text || rep?.chatops_text || '';
+                return (
+                  <div key={h.id} className="rounded-md border text-xs">
+                    <button
+                      className="flex w-full flex-wrap items-center gap-2 px-3 py-2.5 text-left hover:bg-accent/60"
+                      onClick={() => setExpandedReport(open ? null : h.id)}
+                    >
+                      <span className="font-mono font-medium">#{h.id}</span>
+                      <Badge variant="outline">{h.time_window}</Badge>
+                      <span className="text-muted-foreground">{h.event_count} 条告警（严重 {h.critical_count} / 警告 {h.warning_count}）</span>
+                      {rep?.priority && (
+                        <Badge variant="outline" className="border-red-500/40 bg-red-500/10 font-semibold text-red-600">{rep.priority}</Badge>
+                      )}
+                      <span className="ml-auto text-muted-foreground">{h.actor} · {fmtTime(h.created_at)}</span>
+                      {open ? <ChevronUp className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                    </button>
+                    {open && (
+                      <div className="space-y-3 border-t px-3 py-3">
+                        {rep ? (
+                          <>
+                            <div>
+                              <p className="mb-1 font-medium text-muted-foreground">影响面摘要</p>
+                              <p className="leading-relaxed">{rep.impact_summary}</p>
+                            </div>
+                            <div>
+                              <p className="mb-1 font-medium text-muted-foreground">处置动作</p>
+                              <ol className="list-decimal space-y-1 pl-5">
+                                {rep.actions.length === 0 && <li className="list-none text-muted-foreground">无</li>}
+                                {rep.actions.map((a, i) => <li key={i}>{a}</li>)}
+                              </ol>
+                            </div>
+                            <div>
+                              <p className="mb-1 font-medium text-muted-foreground">需通知负责人</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {rep.owners_to_notify.length === 0 && <span className="text-muted-foreground">无</span>}
+                                {rep.owners_to_notify.map((o) => <Badge key={o} variant="secondary">{o}</Badge>)}
+                              </div>
+                            </div>
+                          </>
+                        ) : (
+                          <p className="text-muted-foreground">该报告缺少结构化详情（仅保留摘要统计）。</p>
+                        )}
+                        <div>
+                          <p className="mb-1 font-medium text-muted-foreground">CMDB 影响面（{systems.length} 个系统）</p>
+                          {systems.length === 0 ? (
+                            <p className="text-muted-foreground">窗口内告警未映射到 CMDB 系统。</p>
+                          ) : (
+                            <div className="overflow-hidden rounded-md border">
+                              <table className="w-full table-fixed">
+                                <thead>
+                                  <tr className="border-b bg-muted/60 text-left text-muted-foreground">
+                                    <th className="w-36 px-3 py-1.5 font-medium">系统</th>
+                                    <th className="w-16 px-3 py-1.5 font-medium">告警数</th>
+                                    <th className="w-24 px-3 py-1.5 font-medium">最高级别</th>
+                                    <th className="w-36 px-3 py-1.5 font-medium">负责人</th>
+                                    <th className="px-3 py-1.5 font-medium">涉及服务</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {systems.map((s) => (
+                                    <tr key={s.system} className="border-b last:border-b-0">
+                                      <td className="px-3 py-1.5 font-medium">{s.system}</td>
+                                      <td className="px-3 py-1.5 font-mono">{s.event_count}</td>
+                                      <td className="px-3 py-1.5"><SeverityBadge severity={s.max_severity} /></td>
+                                      <td className="px-3 py-1.5 truncate" title={s.owners.join('、')}>{s.owners.join('、') || '—'}</td>
+                                      <td className="px-3 py-1.5 truncate" title={s.services.map((x) => x.service).join('、')}>
+                                        {s.services.map((x) => x.service).join('、')}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <div className="mb-1 flex items-center justify-between">
+                            <p className="font-medium text-muted-foreground">ChatOps 文本</p>
+                            {chatops && <CopyButton text={chatops} label="复制文本" size="xs" />}
+                          </div>
+                          {chatops ? (
+                            <pre className="log-block max-h-60 overflow-y-auto whitespace-pre-wrap">{chatops}</pre>
+                          ) : (
+                            <p className="text-muted-foreground">无</p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </StateGate>
         </CardContent>

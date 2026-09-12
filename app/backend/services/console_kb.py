@@ -19,7 +19,7 @@ from uuid import uuid4
 
 import yaml
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.approval_requests import Approval_requests
@@ -307,6 +307,50 @@ async def _fetch_related_events(
         )
         related = list(result_ev.scalars().all())
     return related
+
+
+async def get_case_related_events(db: AsyncSession, case_id: str) -> List[Dict[str, Any]]:
+    """案例关联告警实例日志：告警模板精确匹配优先、服务名兜底（案例详情展示）。"""
+    result = await db.execute(select(Kb_cases).where(Kb_cases.case_id == case_id).limit(1))
+    case = result.scalar_one_or_none()
+    if case is None:
+        raise HTTPException(status_code=404, detail="知识案例不存在")
+    return _ser_event_samples(await _fetch_related_events(db, case.alert_template, case.service_name))
+
+
+async def preview_related_events(
+    db: AsyncSession, template: Optional[str], service: Optional[str]
+) -> List[Dict[str, Any]]:
+    """新建/编辑案例时的实例日志预览（按告警模板与服务名即时查询，不入库）。"""
+    return _ser_event_samples(await _fetch_related_events(db, template, service))
+
+
+async def get_case_related_event_counts(db: AsyncSession, cases: List[Kb_cases]) -> Dict[str, int]:
+    """批量统计案例关联告警实例数（模板精确匹配优先、服务名兜底），用于案例库卡片展示。"""
+    counts: Dict[str, int] = {}
+    if not cases:
+        return counts
+    templates = {c.alert_template for c in cases if c.alert_template}
+    services = {c.service_name for c in cases if c.service_name}
+    tpl_counts: Dict[str, int] = {}
+    svc_counts: Dict[str, int] = {}
+    if templates:
+        result = await db.execute(
+            select(Events.template, func.count())
+            .where(Events.template.in_(templates))
+            .group_by(Events.template)
+        )
+        tpl_counts = {tpl: int(n) for tpl, n in result.all() if tpl}
+    if services:
+        result = await db.execute(
+            select(Events.service_name, func.count())
+            .where(Events.service_name.in_(services))
+            .group_by(Events.service_name)
+        )
+        svc_counts = {svc: int(n) for svc, n in result.all() if svc}
+    for c in cases:
+        counts[c.case_id] = tpl_counts.get(c.alert_template or "", 0) or svc_counts.get(c.service_name or "", 0)
+    return counts
 
 
 def _template_similarity(a: str, b: str) -> float:

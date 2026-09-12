@@ -668,9 +668,12 @@ async def run_diagnose_agent(db: AsyncSession, user: UserResponse, event_id: int
 KB_DRAFT_REQUIRED_FIELDS = ("error_type", "service_name", "alert_template", "root_cause", "solution")
 
 
-async def _cluster_recent_events(db: AsyncSession) -> List[Dict[str, Any]]:
-    """按模板聚类最近 7 天告警，返回规模最大的簇（最多 3 个）。"""
-    since = datetime.now(timezone.utc) - timedelta(days=7)
+WINDOW_LABELS = {"1h": "近 1 小时", "24h": "近 24 小时", "7d": "近 7 天"}
+
+
+async def _cluster_recent_events(db: AsyncSession, time_window: str = "24h") -> List[Dict[str, Any]]:
+    """按模板聚类指定时间窗（1h/24h/7d，默认 24h）内告警，返回规模最大的簇（最多 3 个）。"""
+    since = datetime.now(timezone.utc) - timedelta(hours=WINDOW_DELTAS_HOURS.get(time_window, 24))
     result = await db.execute(
         select(Events).where(Events.created_at >= since).order_by(Events.id.desc()).limit(1000)
     )
@@ -731,18 +734,18 @@ async def _cluster_recent_events(db: AsyncSession) -> List[Dict[str, Any]]:
 
 
 async def _draft_kb_cases(
-    db: AsyncSession, clusters: List[Dict[str, Any]]
+    db: AsyncSession, clusters: List[Dict[str, Any]], window_label: str = "近 24 小时"
 ) -> Tuple[List[Dict[str, Any]], str]:
     """调用 AI 起草知识案例草稿；返回校验后的草稿列表与分析文本。"""
     if not clusters:
-        return [], "最近 7 天没有可聚类的重复告警簇"
+        return [], f"{window_label}内没有可聚类的重复告警簇"
     await _flush(db)
     base_messages = [
         ChatMessage(role="system", content=KB_DRAFT_SYSTEM_PROMPT),
         ChatMessage(
             role="user",
             content=(
-                "告警簇统计（最近 7 天）：\n"
+                f"告警簇统计（{window_label}）：\n"
                 + json.dumps(clusters, ensure_ascii=False, indent=2)
                 + "\n\n请输出 JSON 草稿（仅输出一个 JSON 对象）。"
                 "注意：每条 root_cause 与 solution 控制在 120 字以内，确保 JSON 完整闭合。"
@@ -846,19 +849,23 @@ async def _auto_merge_proposal(db: AsyncSession, user: UserResponse) -> Dict[str
     }
 
 
-async def run_kb_governance_agent(db: AsyncSession, user: UserResponse) -> Dict[str, Any]:
-    """知识治理 Agent：聚类告警 → AI 起草案例（走审批）→ 合并提案。"""
+async def run_kb_governance_agent(
+    db: AsyncSession, user: UserResponse, time_window: str = "24h"
+) -> Dict[str, Any]:
+    """知识治理 Agent：按时间窗聚类告警 → AI 起草案例（走审批）→ 合并提案。"""
+    if time_window not in WINDOW_DELTAS_HOURS:
+        raise HTTPException(status_code=400, detail="time_window 仅支持 1h / 24h / 7d")
     actor = user.email or user.id
     started = time.perf_counter()
     model_name = await llm_runtime.get_llm_model_name(db)
 
-    clusters = await _cluster_recent_events(db)
+    clusters = await _cluster_recent_events(db, time_window)
     status = "succeeded"
     error_message: Optional[str] = None
     analysis = ""
     drafts: List[Dict[str, Any]] = []
     try:
-        drafts, analysis = await _draft_kb_cases(db, clusters)
+        drafts, analysis = await _draft_kb_cases(db, clusters, WINDOW_LABELS.get(time_window, "近 24 小时"))
     except Exception as exc:  # noqa: BLE001
         logger.error("KB governance AI draft failed: %s", exc)
         status = "degraded"
@@ -901,7 +908,8 @@ async def run_kb_governance_agent(db: AsyncSession, user: UserResponse) -> Dict[
         merge_result = {"error": str(exc.detail)}
 
     elapsed = (time.perf_counter() - started) * 1000.0
-    summary = f"聚类 {len(clusters)} 簇，起草 {len(drafts_submitted)} 条案例，合并提案 {'已提交' if merge_result.get('proposal_id') else '未生成'}"
+    window_label = WINDOW_LABELS.get(time_window, time_window)
+    summary = f"[{window_label}] 聚类 {len(clusters)} 簇，起草 {len(drafts_submitted)} 条案例，合并提案 {'已提交' if merge_result.get('proposal_id') else '未生成'}"
     row = await _save_session(
         db,
         session_type="kb_governance",
@@ -909,6 +917,7 @@ async def run_kb_governance_agent(db: AsyncSession, user: UserResponse) -> Dict[
         model=model_name,
         event_id=None,
         result={
+            "time_window": time_window,
             "analysis": analysis,
             "clusters": clusters,
             "drafts_submitted": drafts_submitted,
@@ -945,6 +954,7 @@ async def run_kb_governance_agent(db: AsyncSession, user: UserResponse) -> Dict[
         "session_id": row.id,
         "message": summary if status == "succeeded" else "AI 起草失败已降级：仅输出聚类统计与合并提案",
         "governance": {
+            "time_window": time_window,
             "analysis": analysis,
             "clusters": clusters,
             "drafts_submitted": drafts_submitted,

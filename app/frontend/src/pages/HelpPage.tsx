@@ -1,6 +1,6 @@
-/** 帮助中心：控制台使用手册、常见问题与运维部署要点；完整文档见 app/docs/ 目录。 */
+/** 帮助中心：控制台使用手册与常见问题；完整文档见 app/docs/ 目录。 */
 import Markdown from 'markdown-to-jsx';
-import { BookOpenText, LifeBuoy, Rocket } from 'lucide-react';
+import { BookOpenText, LifeBuoy } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 const USER_GUIDE = [
@@ -88,34 +88,6 @@ const FAQ = [
   'demo-operator（值班运维）、demo-sre（SRE）、demo-lead（审批人）、demo-admin（系统管理员），分别对应四个演示角色。',
 ].join('\n');
 
-const OPS_OVERVIEW = [
-  '# 运维部署要点速览',
-  '',
-  '完整方案见仓库文档：app/docs/OPERATIONS_DEPLOYMENT_GUIDE.md 与 app/docs/OPERATIONS_RUNBOOK.md。',
-  '',
-  '## 启动',
-  '',
-  '- 一键启动：bash app/start_app_v2.sh（自动分配端口、安装依赖、启动前后端）。',
-  '- 后端单独：uvicorn main:app --host 0.0.0.0 --port 8000；前端单独：pnpm dev（/api 代理到后端）。',
-  '',
-  '## 数据库',
-  '',
-  '- Atoms Cloud 托管 PostgreSQL，首次启动自动建 11 张业务表。',
-  '- 演示数据：python scripts/seed_console_demo.py；显式 ID 种子后必须执行 python scripts/fix_sequences.py 同步序列，否则审批 / 晋升会主键冲突。',
-  '',
-  '## 健康检查',
-  '',
-  '- GET /health 返回 200 即后端就绪；OpenAPI 文档在 /docs。',
-  '- 日志位于 app/backend/logs/（app_日期.log 与 restart.log）。',
-  '',
-  '## 应急速查',
-  '',
-  '- 审批 / 晋升 500 主键冲突 → scripts/fix_sequences.py。',
-  '- AI 诊断全部 llm_timeout → 配置中心调大 llm_timeout_seconds。',
-  '- 规则 / 知识误发布 → 控制台内版本回滚（秒级生效）。',
-  '- 应急免审 → 配置中心 approval_mode=OFF，恢复后切回 SINGLE_REVIEW。',
-].join('\n');
-
 function DocArticle({ content }: { content: string }) {
   return (
     <article className="prose prose-sm max-w-none dark:prose-invert">
@@ -131,13 +103,12 @@ export default function HelpPage() {
         <div>
           <h1 className="text-lg font-semibold tracking-tight">帮助中心</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            控制台使用手册、常见问题与运维部署要点；完整 Markdown 文档见仓库 app/docs/ 目录。
+            控制台使用手册与常见问题；完整 Markdown 文档见仓库 app/docs/ 目录。
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
           <span className="flex items-center gap-1"><BookOpenText className="h-3.5 w-3.5" />使用手册</span>
           <span className="flex items-center gap-1"><LifeBuoy className="h-3.5 w-3.5" />FAQ</span>
-          <span className="flex items-center gap-1"><Rocket className="h-3.5 w-3.5" />运维部署</span>
         </div>
       </div>
 
@@ -145,16 +116,12 @@ export default function HelpPage() {
         <TabsList>
           <TabsTrigger value="guide">使用手册</TabsTrigger>
           <TabsTrigger value="faq">常见问题</TabsTrigger>
-          <TabsTrigger value="ops">运维部署</TabsTrigger>
         </TabsList>
         <TabsContent value="guide" className="mt-4">
           <DocArticle content={USER_GUIDE} />
         </TabsContent>
         <TabsContent value="faq" className="mt-4">
           <DocArticle content={FAQ} />
-        </TabsContent>
-        <TabsContent value="ops" className="mt-4">
-          <DocArticle content={OPS_OVERVIEW} />
         </TabsContent>
       </Tabs>
     </div>

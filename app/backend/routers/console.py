@@ -387,8 +387,15 @@ async def list_kb_cases(
         count_stmt = count_stmt.where(cond)
     total = (await db.execute(count_stmt)).scalar() or 0
     result = await db.execute(stmt.order_by(Kb_cases.id.desc()).offset(skip).limit(limit))
+    rows = list(result.scalars().all())
+    counts = await console_kb.get_case_related_event_counts(db, rows)
+    items = []
+    for c in rows:
+        item = console_kb.ser_case(c)
+        item["related_event_count"] = counts.get(c.case_id, 0)
+        items.append(item)
     return {
-        "items": [console_kb.ser_case(c) for c in result.scalars().all()],
+        "items": items,
         "total": total,
         "skip": skip,
         "limit": limit,
@@ -416,6 +423,7 @@ async def get_kb_case(
         "case": console_kb.ser_case(case),
         "versions": versions,
         "change_sets": [console_kb.ser_change_set(cs) for cs in cs_result.scalars().all()],
+        "related_events": await console_kb.get_case_related_events(db, case_id),
     }
 
 
@@ -454,6 +462,18 @@ async def scan_duplicates(
 ):
     await require_role(db, current_user, "viewer")
     return {"groups": await console_kb.scan_duplicates(db)}
+
+
+@router.get("/kb/related-events")
+async def preview_kb_related_events(
+    template: str = Query(None),
+    service: str = Query(None),
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """新建/编辑案例时的关联实例日志预览（证据参考，不入库）。"""
+    await require_role(db, current_user, "viewer")
+    return {"items": await console_kb.preview_related_events(db, template, service)}
 
 
 @router.get("/kb/merge-proposals")

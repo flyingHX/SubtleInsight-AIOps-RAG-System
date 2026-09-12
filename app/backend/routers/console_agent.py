@@ -20,6 +20,10 @@ class AgentDiagnoseBody(BaseModel):
     event_id: int
 
 
+class GovernanceBody(BaseModel):
+    time_window: str = "24h"
+
+
 class OncallBody(BaseModel):
     time_window: str = "24h"
 
@@ -37,12 +41,13 @@ async def agent_diagnose(
 
 @router.post("/kb-governance")
 async def agent_kb_governance(
+    body: GovernanceBody,
     current_user: UserResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """知识治理 Agent：聚类告警簇 → 起草案例（走审批）→ 合并提案。"""
+    """知识治理 Agent：按时间窗聚类告警簇 → 起草案例（走审批）→ 合并提案。"""
     await require_role(db, current_user, "sre")
-    return await console_agent.run_kb_governance_agent(db, current_user)
+    return await console_agent.run_kb_governance_agent(db, current_user, body.time_window)
 
 
 @router.post("/oncall-report")

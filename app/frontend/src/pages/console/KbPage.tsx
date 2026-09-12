@@ -1,12 +1,13 @@
 /** C6/C7 知识库：案例检索与编辑审批、版本回滚、变更记录 diff、去重合并。 */
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { GitMerge, PencilLine, Plus, ScanSearch, Undo2 } from 'lucide-react';
+import { GitMerge, PencilLine, Plus, ScanSearch, ScrollText, Undo2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   consoleApi,
   errDetail,
   type ChangeSet,
+  type EventSample,
   type KbCase,
   type KbCaseDetail,
   type MergeGroup,
@@ -15,6 +16,8 @@ import {
 import {
   DiffTable,
   EmptyBlock,
+  SeverityBadge,
+  SpinnerLine,
   StateGate,
   StatusBadge,
   diffEntries,
@@ -52,6 +55,43 @@ const FIELD_LABELS: Record<string, string> = {
   error_type: '错误类型',
   service_name: '服务名',
 };
+
+/** 案例关联告警实例日志列表（案例详情 / 新建案例预览共用）。 */
+function EventSampleList({
+  events,
+  loading,
+  emptyHint,
+}: {
+  events: EventSample[];
+  loading?: boolean;
+  emptyHint?: string;
+}) {
+  if (loading) return <SpinnerLine text="加载实例日志…" />;
+  if (events.length === 0) {
+    return (
+      <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+        {emptyHint ?? '暂无关联实例日志'}
+      </p>
+    );
+  }
+  return (
+    <ul className="space-y-2">
+      {events.map((ev) => (
+        <li key={ev.event_id} className="rounded-md border p-2.5 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary" className="font-mono">{ev.event_id}</Badge>
+            <SeverityBadge severity={ev.severity} />
+            {ev.status && <StatusBadge status={ev.status} />}
+            <span className="text-muted-foreground">{ev.service_name}</span>
+            {ev.error_type && <Badge variant="outline">{ev.error_type}</Badge>}
+            <span className="ml-auto text-muted-foreground">{fmtTime(ev.created_at)}</span>
+          </div>
+          {ev.raw_log && <pre className="log-block mt-1.5 max-h-24 overflow-y-auto">{ev.raw_log}</pre>}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 // ------------------ 编辑 / 新建对话框 ------------------
 
@@ -167,6 +207,16 @@ function CreateCaseDialog({ onClose }: { onClose: () => void }) {
     topology_snapshot: '',
   });
   const [reason, setReason] = useState('');
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const evidenceQuery = useQuery({
+    queryKey: ['kb-related-events', form.alert_template.trim(), form.service_name.trim()],
+    queryFn: () =>
+      consoleApi.previewKbRelatedEvents(
+        form.alert_template.trim() || undefined,
+        form.service_name.trim() || undefined,
+      ),
+    enabled: evidenceOpen,
+  });
   const mutation = useMutation({
     mutationFn: () =>
       consoleApi.createChangeSet({
@@ -268,6 +318,32 @@ function CreateCaseDialog({ onClose }: { onClose: () => void }) {
             value={form.topology_snapshot}
             onChange={(e) => setForm((s) => ({ ...s, topology_snapshot: e.target.value }))}
           />
+        </div>
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <Label className="text-xs">关联实例日志（证据参考，不入库）</Label>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              disabled={!form.alert_template.trim() && !form.service_name.trim()}
+              onClick={() => setEvidenceOpen(true)}
+            >
+              <ScrollText className="mr-1 h-3 w-3" />
+              {evidenceOpen ? '刷新预览' : '查询关联日志'}
+            </Button>
+          </div>
+          {!evidenceOpen ? (
+            <p className="text-xs text-muted-foreground">
+              填写告警模板或服务名后，可查询告警库中匹配的实例日志作为证据参考。
+            </p>
+          ) : (
+            <EventSampleList
+              loading={evidenceQuery.isFetching}
+              events={evidenceQuery.data?.items ?? []}
+              emptyHint="未找到匹配的实例日志（按告警模板精确匹配优先、服务名兜底）"
+            />
+          )}
         </div>
         <div>
           <Label className="mb-1 text-xs">变更理由（必填）</Label>
@@ -375,6 +451,16 @@ function CaseDetailDialog({ caseId, onClose }: { caseId: string; onClose: () => 
             <Separator />
 
             <div>
+              <p className="mb-1.5 text-sm font-semibold">关联实例日志（{detailQuery.data.related_events?.length ?? 0}）</p>
+              <EventSampleList
+                events={detailQuery.data.related_events ?? []}
+                emptyHint="暂无与该案例告警模板 / 服务名匹配的实例日志"
+              />
+            </div>
+
+            <Separator />
+
+            <div>
               <p className="mb-1.5 text-sm font-semibold">版本历史（{detailQuery.data.versions.length}）</p>
               <ul className="space-y-1.5">
                 {detailQuery.data.versions.map((v) => (
@@ -445,24 +531,48 @@ function CaseDetailDialog({ caseId, onClose }: { caseId: string; onClose: () => 
 function MergeGroupCard({ group, onCreate }: { group: MergeGroup; onCreate: (master: string, merged: string[], reason: string) => void }) {
   const [master, setMaster] = useState(group.suggested_master);
   const [reason, setReason] = useState('');
-  const merged = group.case_ids.filter((id) => id !== master);
+  // 取消的案例仅从本次扫描结果中移除（可随时恢复），不影响案例库数据本身
+  const [cancelled, setCancelled] = useState<string[]>([]);
+  const activeCases = group.cases.filter((c) => !cancelled.includes(c.case_id));
+  const effectiveMaster = activeCases.some((c) => c.case_id === master)
+    ? master
+    : (activeCases.find((c) => c.case_id === group.suggested_master)?.case_id ?? activeCases[0]?.case_id ?? '');
+  const merged = activeCases.filter((c) => c.case_id !== effectiveMaster).map((c) => c.case_id);
+
+  if (activeCases.length === 0) {
+    return (
+      <Card className="border-dashed">
+        <CardContent className="flex flex-wrap items-center justify-between gap-2 pt-4 text-xs text-muted-foreground">
+          <span>
+            <span className="font-mono">{group.error_type}</span> · {group.service_name}：本组案例已全部取消，不再参与本次合并。
+          </span>
+          <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={() => setCancelled([])}>
+            恢复全部
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm">
           <span className="font-mono">{group.error_type}</span>
-          <span className="ml-2 font-normal text-muted-foreground">{group.service_name} · {group.case_ids.length} 个相似案例</span>
+          <span className="ml-2 font-normal text-muted-foreground">
+            {group.service_name} · {group.case_ids.length} 个相似案例
+            {cancelled.length > 0 && <span className="ml-1 text-amber-600">（已取消 {cancelled.length}）</span>}
+          </span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <RadioGroup value={master} onValueChange={setMaster} className="gap-2">
-          {group.cases.map((c) => (
+        <RadioGroup value={effectiveMaster} onValueChange={setMaster} className="gap-2">
+          {activeCases.map((c) => (
             <label
               key={c.case_id}
               className={cn(
                 'flex cursor-pointer items-start gap-2.5 rounded-md border p-2.5 text-xs transition-colors',
-                master === c.case_id ? 'border-primary/60 bg-accent' : 'hover:bg-accent/50',
+                effectiveMaster === c.case_id ? 'border-primary/60 bg-accent' : 'hover:bg-accent/50',
               )}
             >
               <RadioGroupItem value={c.case_id} className="mt-0.5" />
@@ -474,9 +584,39 @@ function MergeGroupCard({ group, onCreate }: { group: MergeGroup; onCreate: (mas
                 </p>
                 <p className="mt-1 line-clamp-2 text-muted-foreground">{c.root_cause || '（无根因）'}</p>
               </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 shrink-0 px-1.5 text-xs text-muted-foreground hover:text-destructive"
+                title="从本次扫描结果中移除该案例（不影响案例库数据）"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setCancelled((s) => (s.includes(c.case_id) ? s : [...s, c.case_id]));
+                }}
+              >
+                <X className="mr-0.5 h-3 w-3" />
+                取消
+              </Button>
             </label>
           ))}
         </RadioGroup>
+        {cancelled.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            <span>已取消 {cancelled.length} 个：</span>
+            {cancelled.map((id) => (
+              <button
+                key={id}
+                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 transition-colors hover:bg-accent"
+                title="恢复该案例到本次扫描结果"
+                onClick={() => setCancelled((s) => s.filter((x) => x !== id))}
+              >
+                <span className="font-mono">{id}</span>
+                <Undo2 className="h-3 w-3" />
+              </button>
+            ))}
+          </div>
+        )}
         <Input
           className="h-9 text-xs"
           placeholder="合并理由（必填）：例如同一故障两次入库，合并保留反馈分最高的案例"
@@ -486,10 +626,10 @@ function MergeGroupCard({ group, onCreate }: { group: MergeGroup; onCreate: (mas
         <Button
           size="sm"
           disabled={!reason.trim() || merged.length === 0}
-          onClick={() => onCreate(master, merged, reason.trim())}
+          onClick={() => onCreate(effectiveMaster, merged, reason.trim())}
         >
           <GitMerge className="mr-1.5 h-3.5 w-3.5" />
-          合并到 {master}（归档 {merged.length} 个冗余案例）
+          合并到 {effectiveMaster}（归档 {merged.length} 个冗余案例）
         </Button>
       </CardContent>
     </Card>
@@ -688,6 +828,12 @@ export default function KbPage() {
                     <p className="line-clamp-2 text-sm">{c.root_cause || '（无根因）'}</p>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <span>{c.service_name}</span>
+                      {(c.related_event_count ?? 0) > 0 && (
+                        <Badge variant="outline" className="font-normal">
+                          <ScrollText className="mr-1 h-3 w-3" />
+                          关联日志 {c.related_event_count}
+                        </Badge>
+                      )}
                       <span className="ml-auto">反馈分 {c.feedback_score ?? 0}</span>
                     </div>
                   </CardContent>

@@ -138,6 +138,8 @@ export interface KbCase {
   feedback_score: number | null;
   created_at: string | null;
   updated_at: string | null;
+  /** 案例关联告警实例日志数量（案例库卡片展示） */
+  related_event_count?: number;
 }
 
 export interface CaseVersion {
@@ -201,6 +203,19 @@ export interface KbCaseDetail {
   case: KbCase;
   versions: CaseVersion[];
   change_sets: ChangeSet[];
+  related_events?: EventSample[];
+}
+
+/** 案例关联告警实例日志样本（证据用途）。 */
+export interface EventSample {
+  event_id: string;
+  service_name: string;
+  severity: string;
+  status: string | null;
+  error_type: string | null;
+  template: string | null;
+  raw_log: string | null;
+  created_at: string | null;
 }
 
 export interface ApprovalStep {
@@ -403,6 +418,7 @@ export interface AgentKbGovernanceResult {
   session_id: number;
   message: string;
   governance: {
+    time_window?: string;
     analysis: string;
     clusters: AgentCluster[];
     drafts_submitted: AgentDraftOutcome[];
@@ -534,6 +550,13 @@ export const consoleApi = {
     ),
   rollbackCase: (caseId: string, version: number) =>
     invoke<KbCase>(`/api/v1/console/kb/cases/${encodeURIComponent(caseId)}/rollback`, 'POST', { version }),
+  previewKbRelatedEvents: (template?: string, service?: string) => {
+    const qs = new URLSearchParams();
+    if (template?.trim()) qs.set('template', template.trim());
+    if (service?.trim()) qs.set('service', service.trim());
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return invoke<{ items: EventSample[] }>(`/api/v1/console/kb/related-events${suffix}`);
+  },
   scanDuplicates: () => invoke<{ groups: MergeGroup[] }>('/api/v1/console/kb/duplicates'),
   listMergeProposals: () => invoke<Paged<MergeProposal>>('/api/v1/console/kb/merge-proposals'),
   createMergeProposal: (body: { master_case_id: string; merged_case_ids: string[]; reason: string }) =>
@@ -582,8 +605,8 @@ export const consoleApi = {
   // Agent：诊断 / 知识治理 / 值班
   agentDiagnose: (eventId: number) =>
     invoke<AgentDiagnoseResult>('/api/v1/console/agent/diagnose', 'POST', { event_id: eventId }),
-  agentKbGovernance: () =>
-    invoke<AgentKbGovernanceResult>('/api/v1/console/agent/kb-governance', 'POST', {}),
+  agentKbGovernance: (timeWindow: string) =>
+    invoke<AgentKbGovernanceResult>('/api/v1/console/agent/kb-governance', 'POST', { time_window: timeWindow }),
   agentOncallReport: (timeWindow: string) =>
     invoke<AgentOncallReportResult>('/api/v1/console/agent/oncall-report', 'POST', { time_window: timeWindow }),
   listAgentSessions: (params?: { session_type?: string; limit?: number }) => {
