@@ -336,7 +336,12 @@ function DetailBody({ detail, result, onDiagnose, diagnosing }: {
         <EventStatusBadge status={detail.status} />
         <RagBadge status={detail.rag_status} />
         {perms?.can_diagnose && (
-          <Button size="sm" className="ml-auto" onClick={onDiagnose} disabled={diagnosing}>
+          <Button
+            size="sm"
+            className="ml-auto"
+            onClick={onDiagnose}
+            disabled={diagnosing}
+          >
             <Stethoscope className="mr-1.5 h-3.5 w-3.5" />
             {diagnosing ? '诊断中…' : 'AI 诊断'}
           </Button>
@@ -435,21 +440,26 @@ export default function EventsPage() {
 
   const diagnoseMutation = useMutation({
     mutationFn: (id: number) => consoleApi.diagnose(id),
+    onMutate: (id) => toast(`诊断请求已发出（事件 #${id}），正在执行向量召回与 LLM 分析…`, { duration: 15000 }),
     onSuccess: (res) => {
       toast.success(res.message || 'AI 诊断完成');
       queryClient.invalidateQueries({ queryKey: ['event', selectedId] });
       queryClient.invalidateQueries({ queryKey: ['events'] });
     },
-    onError: (e) => toast.error(`诊断失败：${errDetail(e)}`),
+    onError: (e) => toast.error(`诊断失败：${errDetail(e)}`, { duration: 15000 }),
   });
 
   const items = useMemo(() => listQuery.data?.items ?? [], [listQuery.data]);
+  const detail = detailQuery.data;
   const total = listQuery.data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const select = (id: number) => {
     setSelectedId(id);
-    setMobileDetailOpen(true);
+    // 桌面端（lg 及以上）右侧详情常驻展示，仅窄屏打开抽屉，避免遮罩层拦截「AI 诊断」等操作
+    if (!window.matchMedia('(min-width: 1024px)').matches) {
+      setMobileDetailOpen(true);
+    }
   };
 
   return (
@@ -517,9 +527,9 @@ export default function EventsPage() {
                 error={detailQuery.isError ? errDetail(detailQuery.error) : null}
                 onRetry={() => detailQuery.refetch()}
               >
-                {detailQuery.data && (
+                {detail && (
                   <DetailBody
-                    detail={detailQuery.data}
+                    detail={detail}
                     result={diagnoseMutation.data ?? null}
                     onDiagnose={() => diagnoseMutation.mutate(detail.id)}
                     diagnosing={diagnoseMutation.isPending}
@@ -537,9 +547,9 @@ export default function EventsPage() {
         <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
           <SheetTitle>事件详情与诊断</SheetTitle>
           <div className="mt-4">
-            {detailQuery.data && (
+            {detail && (
               <DetailBody
-                detail={detailQuery.data}
+                detail={detail}
                 result={diagnoseMutation.data ?? null}
                 onDiagnose={() => diagnoseMutation.mutate(detail.id)}
                 diagnosing={diagnoseMutation.isPending}

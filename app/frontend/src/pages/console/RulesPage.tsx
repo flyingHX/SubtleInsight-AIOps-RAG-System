@@ -78,8 +78,7 @@ function RulesTab() {
 
   return (
     <div className="grid items-start gap-4 lg:grid-cols-3">
-      {/* 编辑器：无知识库编辑权限的角色不显示 */}
-      {canEdit && (
+      {/* 规则 YAML：所有角色可见；无编辑权限时只读展示 */}
       <Card className="lg:col-span-2">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">
@@ -89,22 +88,25 @@ function RulesTab() {
         </CardHeader>
         <CardContent className="space-y-3">
           <Textarea
-            className="min-h-80 font-mono text-xs"
+            className={`min-h-80 font-mono text-xs${canEdit ? '' : ' cursor-default bg-muted/50 text-muted-foreground'}`}
             spellCheck={false}
+            readOnly={!canEdit}
             placeholder={'rules:\n  - id: gateway_502\n    error_type: gateway_502\n    keywords: ["bad gateway"]\n    score: 0.8'}
             value={content}
             onChange={(e) => setContent(e.target.value)}
           />
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => validateMutation.mutate()}
-              disabled={validateMutation.isPending || !content.trim() || !perms?.can_edit_kb}
-            >
-              <FileCheck2 className="mr-1.5 h-3.5 w-3.5" />
-              {validateMutation.isPending ? '校验中…' : '校验 YAML'}
-            </Button>
+            {canEdit && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => validateMutation.mutate()}
+                disabled={validateMutation.isPending || !content.trim()}
+              >
+                <FileCheck2 className="mr-1.5 h-3.5 w-3.5" />
+                {validateMutation.isPending ? '校验中…' : '校验 YAML'}
+              </Button>
+            )}
             {canManage && (
               <>
                 <Input
@@ -124,10 +126,16 @@ function RulesTab() {
               </>
             )}
           </div>
-          {canEdit && !canManage && (
+          {!canEdit ? (
             <p className="text-xs text-muted-foreground">
-              当前角色（{perms?.role_label}）可编辑与校验，发布需要系统管理员权限。
+              当前角色（{perms?.role_label}）仅可查看规则 YAML 与版本历史；编辑、校验需要知识库编辑权限，发布需要系统管理员权限。
             </p>
+          ) : (
+            !canManage && (
+              <p className="text-xs text-muted-foreground">
+                当前角色（{perms?.role_label}）可编辑与校验，发布需要系统管理员权限。
+              </p>
+            )
           )}
           {validateResult && (
             <p className="rounded-md border border-teal-600/40 bg-teal-600/10 px-3 py-2 text-xs text-teal-700">
@@ -136,7 +144,6 @@ function RulesTab() {
           )}
         </CardContent>
       </Card>
-      )}
 
       {/* 版本历史 */}
       <Card>
