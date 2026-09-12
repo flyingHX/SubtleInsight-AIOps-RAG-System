@@ -10,6 +10,7 @@ import KbPage from './pages/console/KbPage';
 import ApprovalsPage from './pages/console/ApprovalsPage';
 import RulesPage from './pages/console/RulesPage';
 import OpsPage from './pages/console/OpsPage';
+import HelpPage from './pages/HelpPage';
 import AuthCallback from './pages/AuthCallback';
 import AuthError from './pages/AuthError';
 import LogoutCallbackPage from './pages/LogoutCallbackPage';
@@ -28,6 +29,7 @@ const AppRoutes = () => (
       <Route path="/approvals" element={<ApprovalsPage />} />
       <Route path="/rules" element={<RulesPage />} />
       <Route path="/ops" element={<OpsPage />} />
+      <Route path="/help" element={<HelpPage />} />
     </Route>
   </Routes>
 );

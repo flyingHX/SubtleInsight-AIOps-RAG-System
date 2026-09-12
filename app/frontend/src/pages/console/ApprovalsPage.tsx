@@ -1,10 +1,26 @@
 /** C8 审批中心：待我审批 / 我发起的 / 已处理，通过、拒绝、撤回与步骤时间线。 */
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, CircleDot, Clock, Undo2, XCircle } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, CircleDot, Clock, Undo2, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { consoleApi, errDetail, type ApprovalRequest } from '@/lib/console-api';
-import { EmptyBlock, ErrorBlock, LoadingBlock, StatusBadge, fmtTime } from '@/components/console/shared';
+import {
+  consoleApi,
+  errDetail,
+  type ApprovalRequest,
+  type ChangeSet,
+  type MergeProposal,
+  type UnknownTemplate,
+} from '@/lib/console-api';
+import {
+  DiffTable,
+  EmptyBlock,
+  ErrorBlock,
+  LoadingBlock,
+  SpinnerLine,
+  StatusBadge,
+  diffEntries,
+  fmtTime,
+} from '@/components/console/shared';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePermissions } from '@/components/console/ConsoleLayout';
 import { Badge } from '@/components/ui/badge';
@@ -20,7 +36,9 @@ const BIZ_TYPE_LABEL: Record<string, string> = {
   kb_edit: '知识库变更',
   kb_rollback: '知识库回滚',
   kb_merge: '知识合并',
+  merge: '知识合并',
   rule_publish: '规则发布',
+  rule_promote: '模板晋升',
   template_promote: '模板晋升',
 };
 
@@ -54,6 +72,84 @@ function StepTimeline({ request }: { request: ApprovalRequest }) {
         );
       })}
     </ol>
+  );
+}
+
+/** 审批业务内容：知识库变更展示字段级前后对比，合并展示主/冗余案例，模板晋升展示模板与目标分类。 */
+function ApprovalContentSection({ requestId }: { requestId: number }) {
+  const query = useQuery({
+    queryKey: ['approval-content', requestId],
+    queryFn: () => consoleApi.getApprovalContent(requestId),
+  });
+
+  if (query.isLoading) return <SpinnerLine text="加载审批内容…" />;
+  if (query.isError) {
+    return <ErrorBlock message={`审批内容加载失败：${errDetail(query.error)}`} onRetry={() => query.refetch()} />;
+  }
+
+  const data = query.data;
+  if (!data || !data.content) {
+    return (
+      <div className="rounded-md border border-dashed px-3 py-3 text-xs text-muted-foreground">
+        该审批单暂无可展示的业务内容。
+      </div>
+    );
+  }
+
+  if (data.biz_type === 'kb_edit') {
+    const cs = data.content as ChangeSet;
+    const entries = diffEntries(cs.diff);
+    return (
+      <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Badge variant="outline">变更集 #{cs.id}</Badge>
+          <span className="font-mono font-medium">{cs.case_id}</span>
+          <span>{cs.change_type === 'create' ? '新建案例' : '更新案例'}</span>
+          {cs.version !== null && cs.version !== undefined && <Badge variant="outline">目标版本 v{cs.version}</Badge>}
+          <StatusBadge status={cs.status} />
+          <span className="text-muted-foreground">{cs.created_by}</span>
+        </div>
+        {cs.reason && <p className="text-xs text-muted-foreground">变更理由：{cs.reason}</p>}
+        {entries.length > 0 ? (
+          <DiffTable entries={entries} />
+        ) : (
+          <p className="text-xs text-muted-foreground">该变更没有字段级差异。</p>
+        )}
+      </div>
+    );
+  }
+
+  if (data.biz_type === 'merge') {
+    const p = data.content as MergeProposal;
+    return (
+      <div className="space-y-1.5 rounded-md border bg-muted/30 p-3 text-xs">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">合并提案 #{p.id}</Badge>
+          <span className="font-mono font-medium">{p.master_case_id}</span>
+          <span className="text-muted-foreground">（主案例，合并后保留）</span>
+        </div>
+        <p className="text-muted-foreground">
+          归档冗余案例：{p.merged_case_ids.length > 0 ? p.merged_case_ids.join('、') : '（无）'}
+        </p>
+        {p.reason && <p className="text-muted-foreground">合并理由：{p.reason}</p>}
+      </div>
+    );
+  }
+
+  const t = data.content as UnknownTemplate;
+  return (
+    <div className="space-y-1.5 rounded-md border bg-muted/30 p-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline">未知模板 #{t.id}</Badge>
+        <span>样本 {t.sample_count ?? 0} 条</span>
+        <span className="text-muted-foreground">最近出现服务：{t.last_seen_service || '—'}</span>
+      </div>
+      <pre className="log-block">{t.template}</pre>
+      <p>
+        晋升目标分类：<span className="font-medium">{t.suggested_error_type || 'unknown'}</span>
+        （终审通过后将自动追加规则条目并发布新版本）
+      </p>
+    </div>
   );
 }
 
@@ -112,6 +208,7 @@ function DecisionDialog({ request, action, onClose }: {
 
 function ApprovalCard({ request, canDecide, myEmail }: { request: ApprovalRequest; canDecide: boolean; myEmail: string }) {
   const [decision, setDecision] = useState<'approve' | 'reject' | null>(null);
+  const [contentOpen, setContentOpen] = useState(false);
   const queryClient = useQueryClient();
   const withdrawMutation = useMutation({
     mutationFn: () => consoleApi.decideApproval(request.id, 'withdraw', ''),
@@ -147,6 +244,19 @@ function ApprovalCard({ request, canDecide, myEmail }: { request: ApprovalReques
           <span>单号：#{request.id}</span>
         </div>
         {request.reason && <p className="text-xs text-muted-foreground">申请理由：{request.reason}</p>}
+
+        <div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="-ml-2 h-7 px-2 text-xs text-muted-foreground"
+            onClick={() => setContentOpen((v) => !v)}
+          >
+            {contentOpen ? <ChevronDown className="mr-1 h-3.5 w-3.5" /> : <ChevronRight className="mr-1 h-3.5 w-3.5" />}
+            {contentOpen ? '收起审批内容' : '查看审批内容与前后对比'}
+          </Button>
+          {contentOpen && <ApprovalContentSection requestId={request.id} />}
+        </div>
 
         <StepTimeline request={request} />
 

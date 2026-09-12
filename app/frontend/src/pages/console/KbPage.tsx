@@ -156,35 +156,37 @@ function EditCaseDialog({ detail, onClose }: { detail: KbCaseDetail; onClose: ()
 
 function CreateCaseDialog({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({ case_id: '', error_type: '', service_name: '', root_cause: '', solution: '' });
+  const [form, setForm] = useState({ error_type: '', service_name: '', root_cause: '', solution: '' });
   const [reason, setReason] = useState('');
   const mutation = useMutation({
     mutationFn: () =>
       consoleApi.createChangeSet({
-        case_id: form.case_id.trim(),
+        // 案例 ID 由后端自动生成：KB-YYYYMMDD-当日序号，前端无需填写
+        case_id: '',
         change_type: 'create',
         fields: Object.fromEntries(
           Object.entries(form)
-            .filter(([k]) => k !== 'case_id')
             .filter(([, v]) => v.trim())
             .map(([k, v]) => [k, v.trim()]),
         ),
         reason,
       }),
     onSuccess: (res) => {
+      const caseId = res.change_set.case_id;
       toast.success(
         res.auto_published
-          ? `案例 ${form.case_id} 已创建并发布`
-          : `新建变更集已提交审批（单号 #${res.approval_request_id}）`,
+          ? `案例 ${caseId} 已创建并发布`
+          : `新建变更集已提交审批（单号 #${res.approval_request_id}），案例 ID 自动生成：${caseId}`,
       );
       queryClient.invalidateQueries({ queryKey: ['kb-cases'] });
       queryClient.invalidateQueries({ queryKey: ['change-sets'] });
+      queryClient.invalidateQueries({ queryKey: ['approvals'] });
       onClose();
     },
     onError: (e) => toast.error(`创建失败：${errDetail(e)}`),
   });
 
-  const valid = form.case_id.trim() && form.error_type.trim() && form.service_name.trim() && reason.trim();
+  const valid = Boolean(form.error_type.trim() && form.service_name.trim() && reason.trim());
 
   return (
     <DialogContent className="max-h-[85vh] max-w-xl overflow-y-auto">
@@ -193,25 +195,18 @@ function CreateCaseDialog({ onClose }: { onClose: () => void }) {
         <DialogDescription>创建后按审批模式进入审批流或直接发布，写入版本与审计。</DialogDescription>
       </DialogHeader>
       <div className="space-y-3">
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="mb-1 text-xs">案例 ID（必填）</Label>
-            <Input
-              className="h-9 font-mono text-xs"
-              placeholder="kb_20260911_001"
-              value={form.case_id}
-              onChange={(e) => setForm((s) => ({ ...s, case_id: e.target.value }))}
-            />
-          </div>
-          <div>
-            <Label className="mb-1 text-xs">错误类型（必填）</Label>
-            <Input
-              className="h-9 font-mono text-xs"
-              placeholder="gateway_502"
-              value={form.error_type}
-              onChange={(e) => setForm((s) => ({ ...s, error_type: e.target.value }))}
-            />
-          </div>
+        <p className="rounded-md bg-muted/50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+          案例 ID 无需手工填写：提交后由系统按 <span className="font-mono">KB-日期-当日序号</span> 规则自动生成并保证唯一；
+          审批通过后可在审批中心查看该新建案例的内容与前后对比。
+        </p>
+        <div>
+          <Label className="mb-1 text-xs">错误类型（必填）</Label>
+          <Input
+            className="h-9 font-mono text-xs"
+            placeholder="gateway_502"
+            value={form.error_type}
+            onChange={(e) => setForm((s) => ({ ...s, error_type: e.target.value }))}
+          />
         </div>
         <div>
           <Label className="mb-1 text-xs">服务名（必填）</Label>

@@ -555,6 +555,15 @@ async def decide_approval(
     return await console_kb.decide_approval(db, current_user, request_id, body.action, body.comment)
 
 
+@router.get("/approvals/{request_id}/content")
+async def get_approval_content(
+    request_id: int,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await console_kb.get_approval_content(db, request_id)
+
+
 # ------------------ 规则管理与未知模板 ------------------
 
 @router.get("/rules")

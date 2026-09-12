@@ -45,6 +45,7 @@ const NAV_ITEMS = [
   { to: '/approvals', label: '审批中心', icon: ClipboardCheck },
   { to: '/rules', label: '规则管理', icon: ScrollText },
   { to: '/ops', label: '审计与配置', icon: Settings2 },
+  { to: '/help', label: '使用手册', icon: BookOpenText },
 ];
 
 const APPROVAL_MODE_LABEL: Record<string, string> = {

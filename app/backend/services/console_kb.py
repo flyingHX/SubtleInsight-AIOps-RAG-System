@@ -13,7 +13,9 @@
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import yaml
 from fastapi import HTTPException
@@ -224,6 +226,31 @@ def _validate_fields(fields: Dict[str, Any]) -> Dict[str, str]:
 
 def change_type_needs_identity(fields: Dict[str, Any]) -> bool:
     return False
+
+
+async def _generate_case_id(db: AsyncSession) -> str:
+    """新建案例自动生成 ID：KB-YYYYMMDD-当日三位序号。
+
+    序号按「已入库案例 + 在途 create 变更集」去重后取最小空位，避免审批
+    在途期间出现重复；当日满 999 个时退化为随机后缀兜底。
+    """
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    prefix = f"KB-{date_str}-"
+    existing: set = set()
+    result = await db.execute(select(Kb_cases.case_id).where(Kb_cases.case_id.like(f"{prefix}%")))
+    existing.update(result.scalars().all())
+    result_cs = await db.execute(
+        select(Kb_change_sets.case_id).where(
+            Kb_change_sets.case_id.like(f"{prefix}%"),
+            Kb_change_sets.change_type == "create",
+        )
+    )
+    existing.update(result_cs.scalars().all())
+    for i in range(1, 1000):
+        candidate = f"{prefix}{i:03d}"
+        if candidate not in existing:
+            return candidate
+    return f"{prefix}{uuid4().hex[:6].upper()}"
 
 
 def _template_tokens(template: str) -> set:
@@ -523,6 +550,8 @@ async def create_change_set(
     reason = (payload.get("reason") or "").strip()
     if change_type not in ("update", "create"):
         raise HTTPException(status_code=400, detail="change_type 仅支持 update / create")
+    if change_type == "create" and not case_id:
+        case_id = await _generate_case_id(db)
     if not case_id:
         raise HTTPException(status_code=400, detail="case_id 不能为空")
     fields = _validate_fields(payload.get("fields") or {})
@@ -683,6 +712,55 @@ async def decide_approval(
         target_id=str(request.id), after={"status": "approved", "outcome": outcome},
     )
     return {"status": "approved", "outcome": outcome}
+
+
+async def get_approval_content(db: AsyncSession, request_id: int) -> Dict[str, Any]:
+    """审批内容详情：按 biz_type 返回关联业务对象（知识库变更含修改前后 diff）。"""
+    result = await db.execute(select(Approval_requests).where(Approval_requests.id == request_id))
+    request = result.scalar_one_or_none()
+    if request is None:
+        raise HTTPException(status_code=404, detail="审批单不存在")
+
+    content: Optional[Dict[str, Any]] = None
+    if request.biz_type == "kb_edit":
+        result_cs = await db.execute(
+            select(Kb_change_sets).where(Kb_change_sets.id == int(request.biz_id))
+        )
+        cs = result_cs.scalar_one_or_none()
+        if cs is not None:
+            data = ser_change_set(cs)
+            diff = data.get("diff")
+            if isinstance(diff, dict):
+                # 过滤元数据字段与无实际变化的条目，仅展示有意义的字段级 diff
+                data["diff"] = {
+                    k: v
+                    for k, v in diff.items()
+                    if k not in ("status", "version", "feedback_score")
+                    and isinstance(v, dict)
+                    and v.get("before") != v.get("after")
+                }
+            content = data
+    elif request.biz_type == "merge":
+        result_p = await db.execute(
+            select(Kb_merge_proposals).where(Kb_merge_proposals.id == int(request.biz_id))
+        )
+        p = result_p.scalar_one_or_none()
+        if p is not None:
+            content = ser_merge(p)
+    elif request.biz_type == "rule_promote":
+        result_t = await db.execute(
+            select(Unknown_templates).where(Unknown_templates.id == int(request.biz_id))
+        )
+        t = result_t.scalar_one_or_none()
+        if t is not None:
+            content = ser_template(t)
+
+    return {
+        "biz_type": request.biz_type,
+        "biz_id": request.biz_id,
+        "title": request.title,
+        "content": content,
+    }
 
 
 async def _complete_request(db: AsyncSession, request: Approval_requests, actor: str) -> Dict[str, Any]:

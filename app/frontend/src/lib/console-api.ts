@@ -199,6 +199,16 @@ export interface ApprovalRequest {
   created_at: string | null;
 }
 
+/** 审批关联业务内容：kb_edit 返回 ChangeSet（含 diff）、merge 返回提案、rule_promote 返回模板。 */
+export type ApprovalBizContent = ChangeSet | MergeProposal | UnknownTemplate;
+
+export interface ApprovalContentData {
+  biz_type: string;
+  biz_id: string;
+  title: string;
+  content: ApprovalBizContent | null;
+}
+
 export interface RuleVersion {
   id: number;
   version: number;
@@ -309,6 +319,8 @@ export const consoleApi = {
     invoke<{ items: ApprovalRequest[]; role: string }>(`/api/v1/console/approvals?box=${box}`),
   decideApproval: (id: number, action: string, comment: string) =>
     invoke<{ status: string }>(`/api/v1/console/approvals/${id}/decide`, 'POST', { action, comment }),
+  getApprovalContent: (id: number) =>
+    invoke<ApprovalContentData>(`/api/v1/console/approvals/${id}/content`),
 
   getRules: () => invoke<RulesData>('/api/v1/console/rules'),
   validateRules: (content: string) =>
