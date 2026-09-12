@@ -156,7 +156,16 @@ function EditCaseDialog({ detail, onClose }: { detail: KbCaseDetail; onClose: ()
 
 function CreateCaseDialog({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({ error_type: '', service_name: '', root_cause: '', solution: '' });
+  // 新建案例与案例库保持完整字段结构：error_type/service_name 必填，其余可留空
+  const [form, setForm] = useState({
+    error_type: '',
+    service_name: '',
+    cluster: '',
+    alert_template: '',
+    root_cause: '',
+    solution: '',
+    topology_snapshot: '',
+  });
   const [reason, setReason] = useState('');
   const mutation = useMutation({
     mutationFn: () =>
@@ -197,7 +206,7 @@ function CreateCaseDialog({ onClose }: { onClose: () => void }) {
       <div className="space-y-3">
         <p className="rounded-md bg-muted/50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
           案例 ID 无需手工填写：提交后由系统按 <span className="font-mono">KB-日期-当日序号</span> 规则自动生成并保证唯一；
-          审批通过后可在审批中心查看该新建案例的内容与前后对比。
+          审批中心将展示该新建案例的案例库完整字段视图（未填写字段标注「未填写」）与关联日志实例证据。
         </p>
         <div>
           <Label className="mb-1 text-xs">错误类型（必填）</Label>
@@ -218,6 +227,24 @@ function CreateCaseDialog({ onClose }: { onClose: () => void }) {
           />
         </div>
         <div>
+          <Label className="mb-1 text-xs">集群</Label>
+          <Input
+            className="h-9 text-xs"
+            placeholder="prod-cluster-01"
+            value={form.cluster}
+            onChange={(e) => setForm((s) => ({ ...s, cluster: e.target.value }))}
+          />
+        </div>
+        <div>
+          <Label className="mb-1 text-xs">告警模板</Label>
+          <Textarea
+            className="min-h-16 font-mono text-xs"
+            placeholder="upstream sent too big header while reading response header from upstream"
+            value={form.alert_template}
+            onChange={(e) => setForm((s) => ({ ...s, alert_template: e.target.value }))}
+          />
+        </div>
+        <div>
           <Label className="mb-1 text-xs">根因</Label>
           <Textarea
             className="min-h-16 text-xs"
@@ -231,6 +258,15 @@ function CreateCaseDialog({ onClose }: { onClose: () => void }) {
             className="min-h-16 text-xs"
             value={form.solution}
             onChange={(e) => setForm((s) => ({ ...s, solution: e.target.value }))}
+          />
+        </div>
+        <div>
+          <Label className="mb-1 text-xs">拓扑快照</Label>
+          <Textarea
+            className="min-h-16 font-mono text-xs"
+            placeholder="ingress → gateway(payment) → payment-api → mysql"
+            value={form.topology_snapshot}
+            onChange={(e) => setForm((s) => ({ ...s, topology_snapshot: e.target.value }))}
           />
         </div>
         <div>

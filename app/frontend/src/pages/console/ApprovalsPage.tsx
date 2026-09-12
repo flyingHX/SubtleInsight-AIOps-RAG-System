@@ -6,8 +6,10 @@ import { toast } from 'sonner';
 import {
   consoleApi,
   errDetail,
+  type ApprovalEventSample,
   type ApprovalRequest,
   type ChangeSet,
+  type KbCaseFullView,
   type MergeProposal,
   type UnknownTemplate,
 } from '@/lib/console-api';
@@ -15,7 +17,9 @@ import {
   DiffTable,
   EmptyBlock,
   ErrorBlock,
+  JsonPre,
   LoadingBlock,
+  SeverityBadge,
   SpinnerLine,
   StatusBadge,
   diffEntries,
@@ -75,7 +79,76 @@ function StepTimeline({ request }: { request: ApprovalRequest }) {
   );
 }
 
-/** 审批业务内容：知识库变更展示字段级前后对比，合并展示主/冗余案例，模板晋升展示模板与目标分类。 */
+/** 案例库全部字段的展示顺序与中文标签（审批内容完整展示用）。 */
+const CASE_FIELD_LABELS: Record<string, string> = {
+  case_id: '案例 ID',
+  error_type: '错误类型',
+  service_name: '服务名',
+  cluster: '集群',
+  alert_template: '告警模板',
+  root_cause: '根因',
+  solution: '处置方案',
+  topology_snapshot: '拓扑快照',
+  status: '状态',
+  version: '版本',
+  feedback_score: '反馈分',
+};
+
+/** 完整案例字段卡片：按案例库字段顺序展示全部业务字段，未填写字段显式标注。 */
+function CaseFieldsCard({ label, fields, missing }: { label: string; fields: Record<string, unknown>; missing?: string[] }) {
+  const missingSet = new Set(missing ?? []);
+  return (
+    <div className="rounded-md border bg-background p-2.5">
+      <p className="mb-1.5 text-xs font-medium">{label}</p>
+      <div className="space-y-1.5">
+        {Object.entries(CASE_FIELD_LABELS).map(([key, lbl]) => {
+          const v = fields[key];
+          const empty = v === null || v === undefined || v === '';
+          return (
+            <div key={key} className="grid grid-cols-[84px_1fr] gap-x-2 text-xs">
+              <span className="pt-0.5 text-muted-foreground">{lbl}</span>
+              {empty ? (
+                <span className="italic text-muted-foreground/70">{missingSet.has(key) ? '（未填写）' : '—'}</span>
+              ) : typeof v === 'string' && v.length > 60 ? (
+                <pre className="log-block">{v}</pre>
+              ) : (
+                <span className="break-all font-mono">{String(v)}</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** 关联日志实例样本卡片：作为审批证据展示，最多 5 条。 */
+function EventSamplesCard({ title, events }: { title: string; events: ApprovalEventSample[] }) {
+  return (
+    <div className="rounded-md border bg-background p-2.5">
+      <p className="mb-1.5 text-xs font-medium">
+        {title}
+        <span className="ml-1.5 font-normal text-muted-foreground">共 {events.length} 条（最近样本，证据用途）</span>
+      </p>
+      <div className="space-y-1.5">
+        {events.map((ev) => (
+          <div key={ev.event_id} className="rounded-md border border-dashed p-1.5">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-mono font-medium">{ev.event_id}</span>
+              <span>{ev.service_name}</span>
+              <SeverityBadge severity={ev.severity} />
+              {ev.error_type && <Badge variant="outline">{ev.error_type}</Badge>}
+              <span className="text-muted-foreground">{fmtTime(ev.created_at, true)}</span>
+            </div>
+            {ev.raw_log && <pre className="log-block mt-1">{ev.raw_log}</pre>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 审批业务内容：kb_edit 展示字段级 diff（create 另附案例库完整字段与日志样本），merge 展示合并双方完整案例与合并策略，rule_promote 展示模板、规则条目预览与日志样本。 */
 function ApprovalContentSection({ requestId }: { requestId: number }) {
   const query = useQuery({
     queryKey: ['approval-content', requestId],
@@ -115,6 +188,16 @@ function ApprovalContentSection({ requestId }: { requestId: number }) {
         ) : (
           <p className="text-xs text-muted-foreground">该变更没有字段级差异。</p>
         )}
+        {cs.change_type === 'create' && cs.full_case && (
+          <CaseFieldsCard
+            label="新建案例完整字段（案例库全部字段）"
+            fields={cs.full_case as unknown as Record<string, unknown>}
+            missing={cs.full_case.missing_fields}
+          />
+        )}
+        {cs.related_events && cs.related_events.length > 0 && (
+          <EventSamplesCard title="关联日志实例" events={cs.related_events} />
+        )}
       </div>
     );
   }
@@ -122,33 +205,82 @@ function ApprovalContentSection({ requestId }: { requestId: number }) {
   if (data.biz_type === 'merge') {
     const p = data.content as MergeProposal;
     return (
-      <div className="space-y-1.5 rounded-md border bg-muted/30 p-3 text-xs">
+      <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-xs">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline">合并提案 #{p.id}</Badge>
           <span className="font-mono font-medium">{p.master_case_id}</span>
           <span className="text-muted-foreground">（主案例，合并后保留）</span>
+          <StatusBadge status={p.status} />
         </div>
+        {p.master_case ? (
+          <CaseFieldsCard
+            label={`主案例完整内容：${p.master_case.case_id}`}
+            fields={p.master_case as unknown as Record<string, unknown>}
+          />
+        ) : (
+          <p className="rounded-md border border-dashed px-2.5 py-1.5 text-muted-foreground">
+            主案例 {p.master_case_id} 暂不存在。
+          </p>
+        )}
         <p className="text-muted-foreground">
           归档冗余案例：{p.merged_case_ids.length > 0 ? p.merged_case_ids.join('、') : '（无）'}
         </p>
+        {p.merged_cases && p.merged_cases.length > 0 && (
+          <div className="space-y-2">
+            {p.merged_cases.map((mc) =>
+              'missing' in mc ? (
+                <p key={mc.case_id} className="rounded-md border border-dashed px-2.5 py-1.5 text-muted-foreground">
+                  案例 {mc.case_id} 已不存在（合并执行时将自动跳过）。
+                </p>
+              ) : (
+                <CaseFieldsCard
+                  key={mc.case_id}
+                  label={`被合并案例完整内容：${mc.case_id}`}
+                  fields={mc as unknown as Record<string, unknown>}
+                />
+              ),
+            )}
+          </div>
+        )}
+        {p.merge_strategy && (
+          <div className="rounded-md border bg-background p-2.5">
+            <p className="mb-1.5 font-medium">合并策略</p>
+            <JsonPre data={p.merge_strategy} />
+          </div>
+        )}
         {p.reason && <p className="text-muted-foreground">合并理由：{p.reason}</p>}
+        <p className="text-muted-foreground">
+          发起人：{p.created_by ?? '—'} · 关联审批单：#{p.approval_request_id ?? '—'}
+        </p>
       </div>
     );
   }
 
   const t = data.content as UnknownTemplate;
   return (
-    <div className="space-y-1.5 rounded-md border bg-muted/30 p-3 text-xs">
+    <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-xs">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="outline">未知模板 #{t.id}</Badge>
         <span>样本 {t.sample_count ?? 0} 条</span>
         <span className="text-muted-foreground">最近出现服务：{t.last_seen_service || '—'}</span>
+        <StatusBadge status={t.status} />
       </div>
       <pre className="log-block">{t.template}</pre>
       <p>
         晋升目标分类：<span className="font-medium">{t.suggested_error_type || 'unknown'}</span>
         （终审通过后将自动追加规则条目并发布新版本）
       </p>
+      {t.proposed_rule_entry && (
+        <div className="rounded-md border bg-background p-2.5">
+          <p className="mb-1.5 font-medium">晋升后新增规则条目（预览即所得）</p>
+          <JsonPre data={t.proposed_rule_entry} />
+        </div>
+      )}
+      {t.related_events && t.related_events.length > 0 ? (
+        <EventSamplesCard title="关联日志实例" events={t.related_events} />
+      ) : (
+        <p className="text-muted-foreground">暂无匹配的日志实例（按标准化模板与服务名检索）。</p>
+      )}
     </div>
   );
 }

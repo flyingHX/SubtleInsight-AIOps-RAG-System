@@ -163,6 +163,38 @@ export interface ChangeSet {
   approval_request_id: number | null;
   created_by: string | null;
   created_at: string | null;
+  /** 仅 /approvals/{id}/content 附加：新建案例的案例库完整字段视图 */
+  full_case?: KbCaseFullView | null;
+  /** 仅 /approvals/{id}/content 附加：关联日志实例样本（证据） */
+  related_events?: ApprovalEventSample[];
+}
+
+/** 审批内容中的日志实例样本（证据用途，不替代知识案例正文） */
+export interface ApprovalEventSample {
+  event_id: string;
+  service_name: string;
+  severity: string | null;
+  status: string | null;
+  error_type: string | null;
+  template: string | null;
+  raw_log: string | null;
+  created_at: string | null;
+}
+
+/** 新建案例的案例库完整字段视图（未填写字段以 null 呈现并在 missing_fields 标注） */
+export interface KbCaseFullView {
+  case_id: string;
+  error_type: string;
+  service_name: string;
+  cluster: string | null;
+  alert_template: string | null;
+  root_cause: string | null;
+  solution: string | null;
+  topology_snapshot: string | null;
+  status: string | null;
+  version: number | null;
+  feedback_score: number | null;
+  missing_fields?: string[];
 }
 
 export interface KbCaseDetail {
@@ -200,7 +232,7 @@ export interface ApprovalRequest {
   created_at: string | null;
 }
 
-/** 审批关联业务内容：kb_edit 返回 ChangeSet（含 diff）、merge 返回提案、rule_promote 返回模板。 */
+/** 审批关联业务内容：kb_edit 返回 ChangeSet（含 diff，create 另附完整字段视图与日志样本）、merge 返回提案（含合并双方完整案例）、rule_promote 返回模板（含规则条目预览与日志样本）。 */
 export type ApprovalBizContent = ChangeSet | MergeProposal | UnknownTemplate;
 
 export interface ApprovalContentData {
@@ -234,6 +266,10 @@ export interface UnknownTemplate {
   last_seen_service: string | null;
   status: string;
   created_at: string | null;
+  /** 仅 /approvals/{id}/content 附加：晋升后写入的规则条目预览 */
+  proposed_rule_entry?: { id: string; error_type: string; keywords: string[]; score: number; severity: string };
+  /** 仅 /approvals/{id}/content 附加：关联日志实例样本（证据） */
+  related_events?: ApprovalEventSample[];
 }
 
 export interface AuditLog {
@@ -288,6 +324,10 @@ export interface MergeProposal {
   approval_request_id: number | null;
   created_by: string | null;
   created_at: string | null;
+  /** 仅 /approvals/{id}/content 附加：主案例完整内容 */
+  master_case?: KbCase | null;
+  /** 仅 /approvals/{id}/content 附加：被合并案例完整内容（不存在时以 missing 标注） */
+  merged_cases?: (KbCase | { case_id: string; missing: boolean })[];
 }
 
 // ---------------- Agent（诊断 / 知识治理 / 值班） ----------------

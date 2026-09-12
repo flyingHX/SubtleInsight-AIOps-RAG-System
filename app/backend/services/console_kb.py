@@ -60,6 +60,7 @@ VALID_SEVERITIES = {"critical", "warning", "info"}
 PROMOTE_RULE_SCORE = 0.6
 FEEDBACK_SCORE_MIN = -5.0
 FEEDBACK_SCORE_MAX = 5.0
+APPROVAL_SAMPLE_EVENTS = 5
 
 
 # ------------------ 序列化 ------------------
@@ -255,6 +256,57 @@ async def _generate_case_id(db: AsyncSession) -> str:
 
 def _template_tokens(template: str) -> set:
     return set(re.findall(r"[A-Za-z_][A-Za-z0-9_\-]{2,}", template or ""))
+
+
+def _build_rule_entry(template: Unknown_templates) -> Dict[str, Any]:
+    """由未知模板构造晋升规则条目（晋升执行与审批内容预览共用，保证预览即所得）。"""
+    tokens = [t for t in sorted(_template_tokens(template.template)) if len(t) > 2][:6]
+    return {
+        "id": f"unknown_{template.id}",
+        "error_type": template.suggested_error_type or "unknown",
+        "keywords": tokens or [f"template_{template.id}"],
+        "score": PROMOTE_RULE_SCORE,
+        "severity": "warning",
+    }
+
+
+def _ser_event_samples(events: List[Events]) -> List[Dict[str, Any]]:
+    """事件 → 审批内容日志实例样本（证据用途，不替代知识案例正文）。"""
+    return [
+        {
+            "event_id": ev.event_id,
+            "service_name": ev.service_name,
+            "severity": ev.severity,
+            "status": ev.status,
+            "error_type": ev.error_type,
+            "template": ev.template,
+            "raw_log": ev.raw_log,
+            "created_at": str(ev.created_at) if ev.created_at else None,
+        }
+        for ev in events
+    ]
+
+
+async def _fetch_related_events(
+    db: AsyncSession, template: Optional[str], service: Optional[str]
+) -> List[Events]:
+    """关联日志实例：优先按标准化模板精确匹配，其次按服务名兜底，取最近 N 条。"""
+    result_ev = await db.execute(
+        select(Events)
+        .where(Events.template == (template or ""))
+        .order_by(Events.created_at.desc())
+        .limit(APPROVAL_SAMPLE_EVENTS)
+    )
+    related = list(result_ev.scalars().all())
+    if not related and service:
+        result_ev = await db.execute(
+            select(Events)
+            .where(Events.service_name == service)
+            .order_by(Events.created_at.desc())
+            .limit(APPROVAL_SAMPLE_EVENTS)
+        )
+        related = list(result_ev.scalars().all())
+    return related
 
 
 def _template_similarity(a: str, b: str) -> float:
@@ -509,14 +561,7 @@ async def _apply_rule_promote(db: AsyncSession, request: Approval_requests, acto
     rules = parsed.get("rules") if isinstance(parsed, dict) else None
     if not isinstance(rules, list):
         rules = []
-    tokens = [t for t in sorted(_template_tokens(template.template)) if len(t) > 2][:6]
-    entry = {
-        "id": f"unknown_{template.id}",
-        "error_type": error_type,
-        "keywords": tokens or [f"template_{template.id}"],
-        "score": PROMOTE_RULE_SCORE,
-        "severity": "warning",
-    }
+    entry = _build_rule_entry(template)
     rules = [r for r in rules if isinstance(r, dict) and r.get("id") != entry["id"]]
     rules.append(entry)
     rule_version = await _publish_rule_content(
@@ -739,6 +784,28 @@ async def get_approval_content(db: AsyncSession, request_id: int) -> Dict[str, A
                     and isinstance(v, dict)
                     and v.get("before") != v.get("after")
                 }
+            if cs.change_type == "create":
+                # 新建案例：按案例库全部字段构造完整视图，未填写字段显式标注，便于审批人评估
+                after = data.get("after") if isinstance(data.get("after"), dict) else {}
+                data["full_case"] = {
+                    "case_id": cs.case_id,
+                    "error_type": str(after.get("error_type") or ""),
+                    "service_name": str(after.get("service_name") or ""),
+                    "cluster": after.get("cluster"),
+                    "alert_template": after.get("alert_template"),
+                    "root_cause": after.get("root_cause"),
+                    "solution": after.get("solution"),
+                    "topology_snapshot": after.get("topology_snapshot"),
+                    "status": after.get("status") or "active",
+                    "version": after.get("version") or cs.version,
+                    "feedback_score": None,
+                    "missing_fields": [f for f in KB_CASE_FIELDS if not str(after.get(f) or "").strip()],
+                }
+                service = str(after.get("service_name") or "").strip()
+                if service:
+                    data["related_events"] = _ser_event_samples(
+                        await _fetch_related_events(db, after.get("alert_template"), service)
+                    )
             content = data
     elif request.biz_type == "merge":
         result_p = await db.execute(
@@ -747,6 +814,23 @@ async def get_approval_content(db: AsyncSession, request_id: int) -> Dict[str, A
         p = result_p.scalar_one_or_none()
         if p is not None:
             content = ser_merge(p)
+            # 完整展示合并双方：主案例与全部被合并案例的完整业务字段（含已归档案例）
+            result_master = await db.execute(
+                select(Kb_cases).where(Kb_cases.case_id == p.master_case_id).limit(1)
+            )
+            master_case = result_master.scalar_one_or_none()
+            content["master_case"] = ser_case(master_case) if master_case is not None else None
+            merged_cases: List[Dict[str, Any]] = []
+            for merged_id in content["merged_case_ids"]:
+                result_m = await db.execute(
+                    select(Kb_cases).where(Kb_cases.case_id == merged_id).limit(1)
+                )
+                merged_case = result_m.scalar_one_or_none()
+                if merged_case is not None:
+                    merged_cases.append(ser_case(merged_case))
+                else:
+                    merged_cases.append({"case_id": merged_id, "missing": True})
+            content["merged_cases"] = merged_cases
     elif request.biz_type == "rule_promote":
         result_t = await db.execute(
             select(Unknown_templates).where(Unknown_templates.id == int(request.biz_id))
@@ -754,6 +838,11 @@ async def get_approval_content(db: AsyncSession, request_id: int) -> Dict[str, A
         t = result_t.scalar_one_or_none()
         if t is not None:
             content = ser_template(t)
+            # 晋升后写入的规则条目预览（与晋升执行共用同一构造逻辑，预览即所得）
+            content["proposed_rule_entry"] = _build_rule_entry(t)
+            content["related_events"] = _ser_event_samples(
+                await _fetch_related_events(db, t.template, t.last_seen_service)
+            )
 
     return {
         "biz_type": request.biz_type,
