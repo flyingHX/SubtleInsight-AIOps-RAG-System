@@ -36,6 +36,11 @@ class MilvusClient:
         self.port = int(config.get("port", 19530))
         self.collection_name = config.get("collection", "aiops_knowledge_base")
         self.nprobe = int(config.get("nprobe", 32))
+        self.search_timeout = float(config.get("search_timeout", 3))
+        # 集合句柄缓存：TTL 内复用 Collection 对象，避免每次检索多一次 has_collection RPC
+        self.collection_cache_ttl = float(config.get("collection_cache_ttl", 5))
+        self._collection_obj = None
+        self._collection_checked_at = 0.0
         self._connected = False
         self._connect()
 
@@ -54,11 +59,30 @@ class MilvusClient:
         return self._connected
 
     def _collection(self):
+        """获取集合句柄（TTL 缓存，减少每次检索的 has_collection RPC）。"""
         from pymilvus import Collection, utility
 
-        if not self._connected or not utility.has_collection(self.collection_name):
+        if not self._connected:
             return None
-        return Collection(self.collection_name)
+        now = time.monotonic()
+        if (
+            self._collection_obj is not None
+            and (now - self._collection_checked_at) < self.collection_cache_ttl
+        ):
+            return self._collection_obj
+        try:
+            if not utility.has_collection(self.collection_name):
+                self._collection_obj = None
+                self._collection_checked_at = now
+                return None
+            self._collection_obj = Collection(self.collection_name)
+            self._collection_checked_at = now
+            return self._collection_obj
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Milvus collection lookup failed: %s", exc)
+            self._collection_obj = None
+            self._collection_checked_at = now
+            return None
 
     def ensure_collection(self, overwrite: bool = False) -> bool:
         """创建集合、索引与近 3 个月分区；已存在时按需跳过。"""
@@ -101,6 +125,9 @@ class MilvusClient:
                 if not collection.has_partition(month):
                     collection.create_partition(month)
             collection.load()
+            # 新建/覆盖集合后失效句柄缓存，下一次检索重新解析
+            self._collection_obj = None
+            self._collection_checked_at = 0.0
             logger.info("Collection '%s' ensured", self.collection_name)
             return True
         except Exception as exc:  # noqa: BLE001
@@ -136,7 +163,7 @@ class MilvusClient:
                 expr=expr or None,
                 partition_names=partition_names or None,
                 output_fields=output_fields,
-                timeout=3,
+                timeout=self.search_timeout,
             )
             cases: List[dict] = []
             for hit in (results[0] if results else []):

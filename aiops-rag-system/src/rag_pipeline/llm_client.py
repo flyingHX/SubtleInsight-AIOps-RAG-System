@@ -18,6 +18,9 @@ class LLMClient:
         self.model = config.get("model", "deepseek-chat")
         self.temperature = float(config.get("temperature", 0.1))
         self.timeout = int(config.get("timeout", 5))
+        # 底层重试默认关闭：端到端预算由上层 timeout 熔断统一控制，
+        # 底层重试会把最长阻塞放大为 timeout*(retries+1)，加剧线程池排队与 P99
+        self.max_retries = int(config.get("max_retries", 0))
         self.api_key = config.get("api_key", "")
         self.base_url = config.get("base_url") or None
         self._llm: Optional[ChatOpenAI] = None
@@ -28,7 +31,7 @@ class LLMClient:
                 model=self.model,
                 temperature=self.temperature,
                 timeout=self.timeout,
-                max_retries=1,
+                max_retries=self.max_retries,
                 api_key=self.api_key,
             )
             if self.base_url:

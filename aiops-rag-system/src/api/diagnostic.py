@@ -16,8 +16,13 @@ class DiagnosticRequest(BaseModel):
 
 
 @router.post("/diagnostic", response_model=DiagnosticResult)
-async def manual_diagnostic(req: DiagnosticRequest):
-    """人工触发根因诊断：等效于消费者 2 的 manual_trigger 路径。"""
+def manual_diagnostic(req: DiagnosticRequest):
+    """人工触发根因诊断：等效于消费者 2 的 manual_trigger 路径。
+
+    使用同步 def 路由：FastAPI 会将其放入线程池执行，避免 RAG 全链路
+    （Embedding/Milvus/LLM 最多可达数秒）阻塞事件循环、拖慢 webhook 等
+    其他并发请求（此前 async def + 同步 pipeline.search 是 P99 长尾的首要来源）。
+    """
     event_dict = get_redis().get_event(req.event_id)
     if not event_dict:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -25,4 +30,5 @@ async def manual_diagnostic(req: DiagnosticRequest):
     event = StandardizedEvent(**event_dict)
     result = get_pipeline().search(event)
     result.setdefault("latency_ms", 0)
+    result.setdefault("similar_cases", [])
     return DiagnosticResult(**result)

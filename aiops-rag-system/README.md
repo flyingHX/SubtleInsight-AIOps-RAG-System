@@ -149,3 +149,37 @@ python -m pytest tests/ -v
 - **降级策略**：Milvus 不可用 → LLM 无上下文直答；LLM 超时 → 返回 Top 相似案例；Embedding 失败 → 确定性降级向量；Redis 故障 → 去重 fail-open（保告警不丢）；ES 故障 → 内存缓冲后丢弃（仅审计）。
 - **规则热更新**：修改 `config/rules.yaml` 后自动检测 mtime 热加载，坏配置回退内存快照。
 - **Prompt 安全**：用户日志经模板化变量替换后注入，LLM 输出强制 JSON Schema 解析，解析失败自动降级。
+
+## P99 长尾治理
+
+### 分阶段延迟监控
+
+`/metrics` 暴露 `rag_stage_latency_seconds`（Histogram，按 `stage` 标签），覆盖
+`embedding` / `milvus_search` / `rerank` / `llm` 四个阶段；结合端到端
+`rag_search_latency_seconds` 与 `rag_search_total{status}`（success/llm_timeout/fallback 等）
+可将长尾定位到具体阶段。推荐 PromQL（P99）：
+
+```promql
+histogram_quantile(0.99, sum(rate(rag_stage_latency_seconds_bucket[5m])) by (stage, le))
+```
+
+### 已实施的优化
+
+| 环节 | 风险 | 优化措施 |
+|------|------|----------|
+| Embedding | API 慢/挂导致每请求等满超时（默认 10s） | 连续失败熔断（`EMBEDDING_FAIL_THRESHOLD`/`EMBEDDING_CIRCUIT_SECONDS`），窗口内直接走确定性降级向量；结果 LRU 缓存；本地模型后台预热，冷启动不阻塞请求 |
+| Milvus | 每次检索重复 has_collection RPC；ANN 无超时 | 集合句柄 TTL 缓存（`MILVUS_COLLECTION_CACHE_TTL`）；`search` 超时（`MILVUS_SEARCH_TIMEOUT`）+ `nprobe` 可配置 |
+| 重排 | 候选过多拖慢业务重排 | `RAG_TOP_K` 召回数与 `RAG_FINAL_K` 送 LLM 案例数可配置收敛 |
+| LLM | 底层重试放大阻塞（timeout×(retries+1)）；线程池排队 | 默认 `LLM_MAX_RETRIES=0`，端到端预算统一由 `RAG_LLM_TIMEOUT_SECONDS` 熔断；线程池容量 `RAG_LLM_MAX_WORKERS` 可调 |
+| 人工诊断 | async 路由内同步 RAG 阻塞事件循环 | 改为同步 `def` 路由，FastAPI 自动放线程池执行 |
+| Kafka 消费 | dict 事件传入 `pipeline.search` 静默失败 | `search` 兼容 Pydantic 模型与 dict 两种输入 |
+
+超时降级语义保持不变：LLM 超时/异常时立即返回 Top1 相似案例（`is_fallback=true`），不丢弃已就绪的检索结果。
+
+### 压测验证步骤
+
+1. 启动基础设施与真实 Embedding/LLM 服务，灌入种子案例；
+2. 以并发梯度（如 1/5/20/50）压 `/api/v1/diagnostic`，采集 `/metrics`；
+3. 比对各阶段 P50/P95/P99 与端到端 P99，确认长尾集中在预期阶段；
+4. 按上表调参（优先 `RAG_TOP_K`、`RAG_LLM_MAX_WORKERS`、`MILVUS_NPROBE`）后复测对比。
+

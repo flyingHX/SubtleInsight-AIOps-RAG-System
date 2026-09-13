@@ -17,12 +17,15 @@ def load_config(base_dir: str = ".") -> dict:
             "model": os.getenv("LLM_MODEL", "deepseek-chat"),
             "temperature": float(os.getenv("LLM_TEMPERATURE", "0.1")),
             "timeout": int(os.getenv("LLM_TIMEOUT_SECONDS", "5")),
+            "max_retries": int(os.getenv("LLM_MAX_RETRIES", "0")),
         },
         "milvus": {
             "host": os.getenv("MILVUS_HOST", "localhost"),
             "port": int(os.getenv("MILVUS_PORT", "19530")),
             "collection": os.getenv("MILVUS_COLLECTION", "aiops_knowledge_base"),
             "nprobe": int(os.getenv("MILVUS_NPROBE", "32")),
+            "search_timeout": float(os.getenv("MILVUS_SEARCH_TIMEOUT", "3")),
+            "collection_cache_ttl": float(os.getenv("MILVUS_COLLECTION_CACHE_TTL", "5")),
         },
         "embedder": {
             "model_path": os.getenv("EMBEDDING_MODEL_PATH", "BAAI/bge-m3"),
@@ -30,7 +33,15 @@ def load_config(base_dir: str = ".") -> dict:
             "api_key": os.getenv("EMBEDDING_API_KEY", ""),
             "dim": int(os.getenv("EMBEDDING_DIM", "1024")),
             "timeout": int(os.getenv("EMBEDDING_TIMEOUT", "10")),
+            "fail_threshold": int(os.getenv("EMBEDDING_FAIL_THRESHOLD", "3")),
+            "circuit_seconds": float(os.getenv("EMBEDDING_CIRCUIT_SECONDS", "30")),
         },
+        # RAG 检索/并发调优（P99 长尾治理）
+        "top_k": int(os.getenv("RAG_TOP_K", "20")),
+        "final_k": int(os.getenv("RAG_FINAL_K", "3")),
+        "llm_timeout": float(os.getenv("RAG_LLM_TIMEOUT_SECONDS", "5")),
+        "llm_max_workers": int(os.getenv("RAG_LLM_MAX_WORKERS", "8")),
+        "recent_window_days": int(os.getenv("RAG_RECENT_WINDOW_DAYS", "30")),
         "kafka": {
             "bootstrap_servers": os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
             "topic_standardized": os.getenv("KAFKA_TOPIC_STANDARDIZED", "standardized-events"),
