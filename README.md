@@ -48,6 +48,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8001
 | `docs/CONSOLE_FAQ.md` | 控制台常见问题 |
 | `docs/OPERATIONS_DEPLOYMENT_GUIDE.md` | 运维部署方案手册（含中间件架构 §21、部署指令 §22） |
 | `docs/OPERATIONS_RUNBOOK.md` | 值班应急手册（故障处置矩阵、备份恢复、安全应急） |
+| `docs/DEMO_ACCOUNTS.md` | 演示账号说明（各角色演示账号、免密登录方式、中间件默认凭证与生产安全约束） |
 | `.wiki.md`「API Documentation」 | 接口文档：RAG 流水线对外接口（外部监控系统调用）与控制台后端接口 |
 | `aiops-rag-system/README.md` | 流水线架构、快速开始、API 一览、关键设计 |
 | `app/backend/README.md` / `app/frontend/README.md` | 控制台前后端开发规范（平台模板） |
