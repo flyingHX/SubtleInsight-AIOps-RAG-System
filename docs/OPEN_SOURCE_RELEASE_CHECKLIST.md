@@ -64,7 +64,21 @@ gh release create v1.0.0 aiops-suite-1.0.0.tar.gz --notes "..."
 - **第三方模型/API**：RAG 流水线通过 OpenAI 兼容接口接入 LLM（默认示例 DeepSeek），密钥仅存 `.env`；控制台内置 AIHub 的模型配置加密存储于数据库。开源分发不含任何模型权重与 API 配额。
 - **依赖许可**：Python 依赖见各 `requirements.txt`（均为 MIT/Apache/BSD 系宽松许可）；前端依赖见 `app/frontend/package.json` 与 `pnpm-lock.yaml`。
 
-## 五、发布后维护
+## 五、Markdown 文档审计（2026-09-13）
+
+| 文档 | 审计结论 | 处理建议 |
+|------|----------|----------|
+| `.atoms/` 全部 md（ATOMS/PROGRESS/ARCHITECTURE/SKILLS/skills） | 平台协作上下文与内部技能文档 | **不入库**——未被 Git 跟踪且已被 `.gitignore` 排除，无需处理 |
+| `app/backend/skills_docs/`（4 篇） | Atoms 平台模板内置的能力文档（web-sdk/AIHub/对象存储/自定义 API、mgx-pycheck），对开源用户无意义且暴露平台内部工具链 | **不入库**——已加入 `.gitignore`；可写环境执行 `git rm -r --cached app/backend/skills_docs` |
+| `app/backend/README.md`、`app/frontend/README.md` | 平台模板 README，含 `mgx-pycheck`、`data-mgx-overview`、"Welcome to Atoms" 等平台指令内容 | 发布前**改写**为面向使用者的后端/前端说明（技术栈、目录、启动方式），移除平台工作流段落 |
+| 根 `README.md` | 目录关系表引用 `.atoms/`、`.mgx/config.yaml` 与「Atoms 平台托管」字样，而 `.atoms/`、`.mgx/` 实际不入库，链接语义悬空 | 发布前将目录表中两行改为「平台协作目录（不入库）」或直接删除该两行 |
+| `docs/OPEN_SOURCE_RELEASE_CHECKLIST.md` | 含沙箱内部细节（`/run/gitdata` 只读文件系统等） | 发布前将「本沙箱中 Git 索引由平台托管」一句改为通用表述（如「若 Git 索引只读/由托管环境管理」） |
+| `docs/DEMO_ACCOUNTS.md` | 演示邮箱与中间件默认凭证（minioadmin 等），均已在文中声明生产必改；无真实密钥 | 保留入库（见「四、分发与第三方说明」）；如希望零凭证文档可改为不入库 |
+| `docs/CONSOLE_FAQ.md`、`docs/CONSOLE_USER_GUIDE.md` | 提及预览环境演示账号（与 DEMO_ACCOUNTS 同源），无密码字段 | 保留 |
+| `.wiki.md`、`docs/OPERATIONS_*.md`、`CONTRIBUTING/SECURITY/CODE_OF_CONDUCT`、`aiops-rag-system/README.md` | 全文核查无真实凭证、无内网 IP（仅 0.0.0.0/127.0.0.1 示例地址） | 保留 |
+| `aiops-rag-system/.pytest_cache/README.md` | pytest 自动生成缓存 | 已被 `.gitignore` 排除，未跟踪 |
+
+## 六、发布后维护
 
 - CI（`.github/workflows/ci.yml`）推送/PR 自动运行三套检查。
 - 新增密钥类环境变量时同步更新对应 `.env.example` 与本清单。

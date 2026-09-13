@@ -8,6 +8,7 @@
 .env.*
 !.env.example
 .env.local
+.env.*.local
 .env.production
 .env.development
 
@@ -28,43 +29,71 @@ aiops-suite-*.tar.gz
 
 # ===== Python 缓存与虚拟环境 =====
 __pycache__/
-*.pyc
 *.py[cod]
+*.pyc
+*$py.class
+*.so
+.Python
 *.egg-info/
 .eggs/
 build/
 .venv/
 venv/
+env/
 ENV/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
+.hypothesis/
+# 覆盖率产物
 htmlcov/
 coverage/
+coverage.xml
 *.coverage
+.coverage
+.coverage.*
 *.lcov
 
 # ===== 前端构建产物与依赖 =====
 node_modules/
 dist/
+app/frontend/dist/
+.vite/
+app/frontend/.vite/
+.vite_opt_cache/
 build/
 out/
 !app/promo/out/
 .temp/
-.vite_opt_cache/
 vite.config.ts.timestamp-*.mjs
 vite.config.js.timestamp-*.mjs
 vite.config.mts.timestamp-*.mjs
 vite.config.cts.timestamp-*.mjs
 .sass-cache/
-yarn-error.log
-npm-debug.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
 
 # 注意：pnpm-lock.yaml 不在此清单中——开源项目应提交锁文件保证可复现构建。
 
-# ===== 本地数据库文件 =====
+# ===== 本地数据库文件与证书密钥 =====
 *.sqlite3
 *.db
+*.pem
+*.key
+
+# ===== 中间件本地数据卷（Docker Compose 挂载目录）=====
+volumes/
+data/
+milvus_data/
+redis_data/
+es_data/
+kafka_data/
+pg_data/
 
 # ===== 测试与浏览器产物 =====
 test-results/
@@ -72,6 +101,9 @@ playwright-report/
 
 # ===== 平台上传暂存区（内容归属用户，未经授权不入库）=====
 uploads/
+
+# ===== 平台模板内置文档（对开源用户无意义）=====
+app/backend/skills_docs/
 
 # ===== IDE / 操作系统 =====
 .DS_Store
