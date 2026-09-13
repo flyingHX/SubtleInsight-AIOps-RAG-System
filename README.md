@@ -18,7 +18,6 @@
 | `aiops-rag-system/` | RAG 流水线子系统 | Python 3.10 + FastAPI + LangChain；自带 `docker-compose.yml`（etcd/MinIO/Milvus/Kafka/Redis/ES）、pytest 测试（30 passed）、初始化与种子脚本 |
 | `app/` | 运营控制台子系统（Atoms 平台托管） | 平台预览服务、受保护入口（`backend/main.py` 等）与 `.mgx/config.yaml` 绑定此路径，不可迁移；一键启动 `bash app/start_app_v2.sh` |
 | `docs/` | 项目级文档（整个项目共用） | 控制台使用手册、FAQ、运维部署方案手册、运维 Runbook |
-| `uploads/` | 平台文件上传暂存区 | 用户上传的临时文件，平台管理 |
 | `.wiki.md` | 平台 Wiki 摘要 | 自动维护的项目概览/模块/目录树/**接口文档**（面向外部系统调用方） |
 | `.git` | Git 仓库指针 | 指向平台 gitdata，由平台管理 |
 | 根目录 `verify_*.py`、`debug_*.py`、`*_tmp.py` | 验收 / 调试工作脚本 | 历史轮次的一次性验证脚本（API 回归、权限、Agent、LLM 配置等），保留在根目录 |
