@@ -52,3 +52,12 @@ uvicorn src.main:app --host 0.0.0.0 --port 8001
 | `.wiki.md`「API Documentation」 | 接口文档：RAG 流水线对外接口（外部监控系统调用）与控制台后端接口 |
 | `aiops-rag-system/README.md` | 流水线架构、快速开始、API 一览、关键设计 |
 | `app/backend/README.md` / `app/frontend/README.md` | 控制台前后端开发规范（平台模板） |
+
+## 开源与安全
+
+本仓库按开源标准维护，公开发布前的敏感文件审计结论与操作步骤见 [docs/OPEN_SOURCE_RELEASE_CHECKLIST.md](docs/OPEN_SOURCE_RELEASE_CHECKLIST.md)。
+
+- **许可证**：[Apache-2.0](LICENSE)；贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
+- **安全**：安全漏洞请勿公开上报，按 [SECURITY.md](SECURITY.md) 的私密渠道提交；部署必改项（`DATABASE_URL`、`JWT_SECRET_KEY`、`MASK_KEY` 等）同文档。
+- **环境变量**：仓库仅保留脱敏模板——`aiops-rag-system/.env.example`（RAG 流水线）、`app/backend/.env.example` 与 `app/frontend/.env.example`（控制台）；真实 `.env`、密钥、日志、安装包（`aiops-suite-*.tar.gz`）与临时脚本一律不入库（规则见根 `.gitignore`）。
+- **CI**：`.github/workflows/ci.yml` 在 push/PR 时自动运行 RAG pytest（Fake 桩免中间件）、控制台后端语法检查、前端 ESLint + 生产构建。
